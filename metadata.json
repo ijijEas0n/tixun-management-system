@@ -1,0 +1,6 @@
+{
+  "name": "径技与君的体训管理系统",
+  "description": "专业径赛与体能训练管理专家，支持多年度档案管理、学生个人成长曲线分析、批量Excel导入及成绩报表导出。数据本地存储，离线可用。",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
