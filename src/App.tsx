@@ -6,10 +6,10 @@
 import React, { useState } from 'react';
 import Layout from './components/Layout';
 import StudentList from './components/StudentList';
-import DataEntry from './components/DataEntry';
 import Rankings from './components/Rankings';
 import StudentProfile from './components/StudentProfile';
 import YearSelector from './components/YearSelector';
+import TestWorkspace from './components/TestWorkspace';
 import { useData } from './lib/storage';
 import { Student } from './types';
 
@@ -22,14 +22,22 @@ export default function App() {
     deleteYear,
     updateYear,
     addStudent,
+    updateStudent,
     deleteStudent,
     batchDeleteStudents,
     deleteRecord,
     updateRecordsBatch,
+    revertScoreSyncBatch,
     batchAddStudents,
+    addTestSession,
+    updateTestSession,
+    deleteTestSession,
+    addGroupingVersion,
+    updateGroupingVersion,
+    applyPrearrangedImport,
   } = useData();
 
-  const [activeTab, setActiveTab] = useState('students'); // students, entry, rankings
+  const [activeTab, setActiveTab] = useState('grouping'); // grouping, entry, students, rankings
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [isYearSelectorOpen, setIsYearSelectorOpen] = useState(false);
 
@@ -59,11 +67,24 @@ export default function App() {
             onSelect={setSelectedStudent}
           />
         );
+      case 'grouping':
       case 'entry':
         return (
-          <DataEntry
+          <TestWorkspace
+            view={activeTab === 'grouping' ? 'grouping' : 'entry'}
             students={studentsInYear}
+            records={data.records}
+            testSessions={data.testSessions.filter(t => t.yearId === currentYearId)}
+            currentYearId={currentYearId}
+            onAddTestSession={addTestSession}
+            onUpdateTestSession={updateTestSession}
+            onDeleteTestSession={deleteTestSession}
+            onAddGroupingVersion={addGroupingVersion}
+            onUpdateGroupingVersion={updateGroupingVersion}
+            onUpdateStudent={updateStudent}
             onSaveBatch={updateRecordsBatch}
+            onRevertScoreSync={revertScoreSyncBatch}
+            onApplyPrearrangedImport={applyPrearrangedImport}
           />
         );
       case 'rankings':
@@ -71,8 +92,9 @@ export default function App() {
           <Rankings
             students={studentsInYear}
             records={data.records}
-            onUpdateRecord={(studentId, date, scores) => {
-              updateRecordsBatch([{ studentId, date, scores }]);
+            testSessions={data.testSessions.filter(t => t.yearId === currentYearId)}
+            onUpdateRecord={(studentId, target, scores) => {
+              updateRecordsBatch([{ studentId, ...target, scores }]);
             }}
             onDeleteRecord={deleteRecord}
           />

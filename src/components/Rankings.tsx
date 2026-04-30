@@ -1,39 +1,64 @@
 import React, { useState, useMemo } from 'react';
-import { Download, Trophy, Zap, Target, Ruler, Star, Calendar, Users, Edit2, Check, X, Trash2 } from 'lucide-react';
-import { Student, TestRecord, AppData, ScoreSet } from '../types';
+import { Activity, AlertTriangle, ArrowUp, BarChart3, ChevronDown, Download, Trophy, Calendar, Edit2, Check, X, Trash2 } from 'lucide-react';
+import { Student, TestRecord, ScoreSet, TestSession, SportEventKey } from '../types';
 import { formatTime800m, cn } from '../lib/utils';
+import { buildRankTestOptions, getRecordTestKey, RecordTarget } from '../lib/testRecords';
+import {
+  ANALYSIS_EVENTS,
+  buildOverallPerformanceAnalysis,
+  buildSingleEventPerformanceAnalysis,
+  ScoreDistributionBucket,
+  StudentChangeItem,
+  StudentFastImproverItem,
+  StudentVolatilityItem,
+  TestAnalysisSnapshot,
+  TestTrendPoint,
+} from '../lib/performanceAnalysis';
 import * as XLSX from 'xlsx';
 import ConfirmModal from './ConfirmModal';
 
 interface RankingsProps {
   students: Student[];
   records: Record<string, TestRecord[]>;
-  onUpdateRecord: (studentId: string, date: string, scores: Partial<ScoreSet>) => void;
+  testSessions: TestSession[];
+  onUpdateRecord: (studentId: string, target: RecordTarget, scores: Partial<ScoreSet>) => void;
   onDeleteRecord: (studentId: string, recordId: string) => void;
 }
 
 type RankType = 'total' | 'hundred' | 'shotPut' | 'tripleJump' | 'eightHundred';
+type DashboardMode = 'overall' | 'event';
+type ExpandedPanel = 'dashboard' | 'rankings';
 
-export default function Rankings({ students, records, onUpdateRecord, onDeleteRecord }: RankingsProps) {
+export default function Rankings({ students, records, testSessions, onUpdateRecord, onDeleteRecord }: RankingsProps) {
   const [activeType, setActiveType] = useState<RankType>('total');
+  const [dashboardMode, setDashboardMode] = useState<DashboardMode>('overall');
+  const [dashboardEvent, setDashboardEvent] = useState<SportEventKey>('hundred');
+  const [expandedPanel, setExpandedPanel] = useState<ExpandedPanel>('dashboard');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<Partial<ScoreSet>>({});
   const [confirmDelete, setConfirmDelete] = useState<{ studentId: string, recordId: string } | null>(null);
   
-  const availableDates = useMemo(() => {
-    const dates = new Set<string>();
-    Object.values(records).forEach(studentRecords => {
-      studentRecords.forEach(r => dates.add(r.date));
-    });
-    return Array.from(dates).sort((a, b) => b.localeCompare(a));
-  }, [records]);
+  const testOptions = useMemo(() => {
+    return buildRankTestOptions(records, students, testSessions);
+  }, [records, students, testSessions]);
 
-  const [selectedDate, setSelectedDate] = useState<string>(availableDates[0] || '');
+  const [selectedTestKey, setSelectedTestKey] = useState<string>(testOptions[0]?.key || '');
+
+  React.useEffect(() => {
+    if (testOptions.length === 0) {
+      setSelectedTestKey('');
+      return;
+    }
+    if (!selectedTestKey || !testOptions.some(option => option.key === selectedTestKey)) {
+      setSelectedTestKey(testOptions[0].key);
+    }
+  }, [testOptions, selectedTestKey]);
 
   const rankedData = useMemo(() => {
+    const effectiveKey = selectedTestKey || testOptions[0]?.key || '';
     const data = students.map(student => {
       const studentRecords = records[student.id] || [];
-      const recordOnDate = studentRecords.find(r => r.date === (selectedDate || availableDates[0]));
+      const recordOnDate = studentRecords.find(r => getRecordTestKey(r) === effectiveKey);
       return { student, record: recordOnDate };
     }).filter(d => d.record);
 
@@ -57,7 +82,19 @@ export default function Rankings({ students, records, onUpdateRecord, onDeleteRe
         return valB - valA;
       }
     });
-  }, [students, records, selectedDate, activeType, availableDates]);
+  }, [students, records, selectedTestKey, activeType, testOptions]);
+
+  const selectedOption = testOptions.find(option => option.key === selectedTestKey);
+
+  const analysis = useMemo(() => {
+    return buildOverallPerformanceAnalysis(students, records, testSessions);
+  }, [students, records, testSessions]);
+
+  const eventAnalysis = useMemo(() => {
+    return buildSingleEventPerformanceAnalysis(students, records, dashboardEvent, testSessions);
+  }, [students, records, dashboardEvent, testSessions]);
+
+  const formatScore = (value: number | null) => value === null ? '--' : value.toFixed(2);
 
   const handleStartEdit = (studentId: string, currentScores: ScoreSet) => {
     setEditingId(studentId);
@@ -65,8 +102,18 @@ export default function Rankings({ students, records, onUpdateRecord, onDeleteRe
   };
 
   const handleSaveEdit = () => {
-    if (editingId && selectedDate) {
-      onUpdateRecord(editingId, selectedDate, editValues);
+    if (editingId) {
+      const editingRecord = rankedData.find(item => item.student.id === editingId)?.record;
+      if (!editingRecord) return;
+      onUpdateRecord(
+        editingId,
+        {
+          date: editingRecord.date,
+          testSessionId: editingRecord.testSessionId,
+          testName: editingRecord.testName,
+        },
+        editValues,
+      );
       setEditingId(null);
     }
   };
@@ -79,6 +126,7 @@ export default function Rankings({ students, records, onUpdateRecord, onDeleteRe
   const handleExport = () => {
     const exportData = rankedData.map((d, i) => ({
       '排名': i + 1,
+      '测试': selectedOption?.label || '测试',
       '姓名': d.student.name,
       '性别': d.student.gender === 'male' ? '男' : '女',
       '100米成绩': d.record?.scores.hundred ? `${d.record.scores.hundred}s` : '--',
@@ -90,7 +138,7 @@ export default function Rankings({ students, records, onUpdateRecord, onDeleteRe
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "成绩报表");
-    XLSX.writeFile(wb, `体育测试报表_${selectedDate || '全部'}.xlsx`);
+    XLSX.writeFile(wb, `体育测试报表_${(selectedOption?.label || '全部').replace(/[\\/:*?"<>|]/g, '_')}.xlsx`);
   };
 
   const tabs = [
@@ -101,20 +149,348 @@ export default function Rankings({ students, records, onUpdateRecord, onDeleteRe
     { id: 'eightHundred', label: '800米' },
   ] as const;
 
+  const renderLineChart = (points: TestTrendPoint[], title: string) => {
+    const values = points.map(point => point.averageTotal);
+    const min = values.length ? Math.min(...values) : 0;
+    const max = values.length ? Math.max(...values) : 100;
+    const span = Math.max(1, max - min);
+    const chartPoints = points.map((point, index) => {
+      const x = points.length <= 1 ? 8 : 8 + (index / (points.length - 1)) * 84;
+      const y = 76 - ((point.averageTotal - min) / span) * 54;
+      return { x, y, point };
+    });
+    const path = chartPoints.map(item => `${item.x},${item.y}`).join(' ');
+
+    return (
+      <div className="rounded-xl border border-slate-100 bg-white p-3 min-w-0">
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <p className="text-[10px] font-black text-slate-400">{title}</p>
+          <span className="text-[10px] font-bold text-slate-400">{points.length} 次测试</span>
+        </div>
+        {points.length === 0 ? (
+          <div className="h-28 flex items-center justify-center text-xs font-bold text-slate-300">暂无趋势数据</div>
+        ) : (
+          <>
+            <svg viewBox="0 0 100 82" className="w-full h-28 overflow-visible">
+              <line x1="8" y1="76" x2="96" y2="76" stroke="#e2e8f0" strokeWidth="1" />
+              <line x1="8" y1="22" x2="96" y2="22" stroke="#f1f5f9" strokeWidth="1" />
+              <polyline points={path} fill="none" stroke="#2563eb" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+              {chartPoints.map(item => (
+                <g key={item.point.key}>
+                  <circle cx={item.x} cy={item.y} r="3.5" fill="#2563eb" />
+                  <text x={item.x} y={item.y - 7} textAnchor="middle" fontSize="7" fontWeight="800" fill="#475569">
+                    {item.point.averageTotal.toFixed(1)}
+                  </text>
+                </g>
+              ))}
+            </svg>
+            <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${Math.max(1, points.length)}, minmax(0, 1fr))` }}>
+              {points.map(point => (
+                <span key={point.key} className="truncate text-center text-[9px] font-black text-slate-400">{point.date.slice(5)}</span>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  const renderDistribution = (distribution: ScoreDistributionBucket[]) => {
+    const maxCount = Math.max(1, ...distribution.map(bucket => bucket.count));
+    return (
+      <div className="space-y-1.5">
+        {distribution.map(bucket => (
+          <div key={bucket.label} className="grid grid-cols-[48px_1fr_24px] items-center gap-2">
+            <span className="text-[10px] font-bold text-slate-500">{bucket.label}</span>
+            <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+              <div className="h-full rounded-full bg-blue-500" style={{ width: `${(bucket.count / maxCount) * 100}%` }} />
+            </div>
+            <span className="text-right text-[10px] font-black text-slate-500">{bucket.count}</span>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderChangeList = (items: StudentChangeItem[], tone: 'up' | 'down') => (
+    <div className="space-y-1">
+      {items.length === 0 ? (
+        <p className="text-[11px] font-bold text-slate-300">暂无名单</p>
+      ) : items.slice(0, 6).map(item => (
+        <div key={item.student.id} className="flex items-center justify-between gap-2 text-[11px] font-bold">
+          <span className="truncate text-slate-700">{item.student.name}</span>
+          <span className={tone === 'up' ? 'text-emerald-600' : 'text-red-500'}>
+            {item.change > 0 ? '+' : ''}{item.change.toFixed(2)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+
+  const renderFocusStudents = (
+    fastest: StudentFastImproverItem[],
+    declines: StudentChangeItem[],
+    volatile: StudentVolatilityItem[],
+  ) => (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
+      <div className="rounded-xl border border-slate-100 bg-white p-3 min-w-0">
+        <p className="text-[10px] font-black text-slate-400 mb-2">提分最快</p>
+        {fastest.slice(0, 4).map(item => (
+          <div key={item.student.id} className="flex justify-between gap-2 text-[11px] font-bold py-0.5">
+            <span className="truncate text-slate-700">{item.student.name}</span>
+            <span className="text-emerald-600">+{item.change.toFixed(2)}</span>
+          </div>
+        ))}
+        {fastest.length === 0 && <p className="text-[11px] font-bold text-slate-300">暂无数据</p>}
+      </div>
+      <div className="rounded-xl border border-slate-100 bg-white p-3 min-w-0">
+        <p className="text-[10px] font-black text-slate-400 mb-2">连续下滑</p>
+        {declines.slice(0, 4).map(item => (
+          <div key={item.student.id} className="flex justify-between gap-2 text-[11px] font-bold py-0.5">
+            <span className="truncate text-slate-700">{item.student.name}</span>
+            <span className="text-red-500">{item.change.toFixed(2)}</span>
+          </div>
+        ))}
+        {declines.length === 0 && <p className="text-[11px] font-bold text-slate-300">暂无数据</p>}
+      </div>
+      <div className="rounded-xl border border-slate-100 bg-white p-3 min-w-0">
+        <p className="text-[10px] font-black text-slate-400 mb-2">波动大</p>
+        {volatile.slice(0, 4).map(item => (
+          <div key={item.student.id} className="flex justify-between gap-2 text-[11px] font-bold py-0.5">
+            <span className="truncate text-slate-700">{item.student.name}</span>
+            <span className="text-orange-500">波动{item.range.toFixed(2)}</span>
+          </div>
+        ))}
+        {volatile.length === 0 && <p className="text-[11px] font-bold text-slate-300">暂无数据</p>}
+      </div>
+    </div>
+  );
+
+  const renderTestSnapshot = (snapshot: TestAnalysisSnapshot) => (
+    <article key={snapshot.key} className="min-w-[270px] rounded-xl border border-slate-100 bg-white p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="text-xs font-black text-slate-900 truncate">{snapshot.label}</h3>
+          <p className="text-[10px] font-bold text-slate-400 mt-0.5">{snapshot.recordedCount} 人 · {snapshot.date}</p>
+        </div>
+        <span className="text-[10px] font-black px-2 py-1 rounded-full bg-blue-50 text-blue-700">单次分析</span>
+      </div>
+      <div className="grid grid-cols-4 gap-1 mt-3">
+        {[
+          ['平均', snapshot.average],
+          ['最高', snapshot.max],
+          ['最低', snapshot.min],
+          ['众数', snapshot.mode],
+        ].map(([label, value]) => (
+          <div key={label as string} className="rounded-lg bg-slate-50 px-2 py-1.5">
+            <p className="text-[9px] font-black text-slate-400">{label as string}</p>
+            <p className="text-xs font-black text-slate-800">{formatScore(value as number | null)}</p>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3">
+        <p className="text-[10px] font-black text-slate-400 mb-1.5">区间分布</p>
+        {renderDistribution(snapshot.distribution)}
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <div>
+          <p className="text-[10px] font-black text-emerald-600 mb-1">提分板</p>
+          {renderChangeList(snapshot.progressBoard, 'up')}
+        </div>
+        <div>
+          <p className="text-[10px] font-black text-red-500 mb-1">退后板</p>
+          {renderChangeList(snapshot.regressionBoard, 'down')}
+        </div>
+      </div>
+    </article>
+  );
+
+  const dashboardSnapshots = dashboardMode === 'overall' ? analysis.testAnalyses : eventAnalysis.testAnalyses;
+  const dashboardTrend = dashboardMode === 'overall' ? analysis.trend : eventAnalysis.trend;
+  const latestSnapshot = dashboardSnapshots[dashboardSnapshots.length - 1] || null;
+  const collapsedDashboardLabel = dashboardMode === 'overall' ? '总体情况' : `${eventAnalysis.label}单项情况`;
+  const collapsedRankingLabel = selectedOption?.label || '暂无测试';
+
+  const renderCollapsedPanelBar = (
+    panel: ExpandedPanel,
+    title: string,
+    description: string,
+    Icon: React.ComponentType<{ className?: string }>,
+  ) => (
+    <button
+      type="button"
+      onClick={() => setExpandedPanel(panel)}
+      className="panel-switch-in shrink-0 h-12 w-full rounded-xl border border-slate-200 bg-white px-4 shadow-sm transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-blue-200 hover:bg-blue-50/40 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+    >
+      <span className="flex h-full items-center justify-between gap-3 text-left">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
+            <Icon className="h-3.5 w-3.5" />
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-xs font-black text-slate-800">{title}</span>
+            <span className="block truncate text-[10px] font-bold text-slate-400">{description}</span>
+          </span>
+        </span>
+        <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-black text-blue-600">
+          展开
+          <ChevronDown className="h-3.5 w-3.5 -rotate-90" />
+        </span>
+      </span>
+    </button>
+  );
+
   return (
-    <div className="h-full flex flex-col p-4 overflow-hidden">
-      <section className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
-        <div className="p-3 border-b border-slate-100 flex items-center justify-between bg-slate-50 shrink-0">
-          <div className="flex items-center space-x-3">
+    <div className="h-full flex flex-col p-3 gap-3 overflow-hidden">
+      {expandedPanel === 'dashboard' ? (
+      <section className="panel-switch-in flex-1 min-h-0 bg-white rounded-xl shadow-sm border border-slate-200 p-3 overflow-y-auto custom-scrollbar transition-all duration-300 ease-out">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div className="min-w-0">
+            <h2 className="text-sm font-black text-slate-900 flex items-center gap-2">
+              <BarChart3 className="w-4 h-4 text-blue-600" /> 数据看板
+            </h2>
+            <p className="text-[10px] font-bold text-slate-400 mt-0.5 truncate">
+              {dashboardMode === 'overall' ? '总体情况：总分趋势与逐次分析' : `单项情况：${eventAnalysis.label}趋势与逐次分析`}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex bg-slate-100 border border-slate-200 rounded-lg p-0.5 text-[11px] font-black">
+              <button
+                onClick={() => setDashboardMode('overall')}
+                className={cn('px-3 py-1.5 rounded-md', dashboardMode === 'overall' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500')}
+              >
+                总体情况
+              </button>
+              <button
+                onClick={() => setDashboardMode('event')}
+                className={cn('px-3 py-1.5 rounded-md', dashboardMode === 'event' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500')}
+              >
+                单项情况
+              </button>
+            </div>
+            <button
+              type="button"
+              aria-label="收起看板并展开成绩排行"
+              title="收起看板并展开成绩排行"
+              onClick={() => setExpandedPanel('rankings')}
+              className="group hidden h-10 w-10 sm:inline-flex items-center justify-center rounded-xl border border-blue-200 bg-blue-50 text-blue-600 shadow-sm transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-blue-600 hover:text-white hover:shadow-md active:-translate-y-1 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            >
+              <ArrowUp className="h-5 w-5 transition-transform duration-300 ease-out group-hover:-translate-y-0.5 group-hover:scale-110 group-active:-translate-y-1" />
+            </button>
+          </div>
+        </div>
+
+        {dashboardMode === 'event' && (
+          <div className="mb-3 flex flex-wrap gap-1.5">
+            {ANALYSIS_EVENTS.map(event => (
+              <button
+                key={event.id}
+                onClick={() => setDashboardEvent(event.id)}
+                className={cn(
+                  'px-3 py-1.5 rounded-lg text-[11px] font-black border',
+                  dashboardEvent === event.id
+                    ? 'bg-blue-600 border-blue-600 text-white'
+                    : 'bg-white border-slate-200 text-slate-500',
+                )}
+              >
+                {event.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-3">
+          {renderLineChart(dashboardTrend, dashboardMode === 'overall' ? '历次测试总分进步情况' : `${eventAnalysis.label}单项进步情况`)}
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              ['平均分', latestSnapshot?.average ?? null],
+              ['最高分', latestSnapshot?.max ?? null],
+              ['最低分', latestSnapshot?.min ?? null],
+              ['众数', latestSnapshot?.mode ?? null],
+            ].map(([label, value]) => (
+              <div key={label as string} className="rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2">
+                <p className="text-[10px] font-black text-slate-400">{label as string}</p>
+                <p className="mt-1 text-xl font-black text-slate-800">{formatScore(value as number | null)}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <details className="group mt-3 rounded-xl border border-slate-100 bg-slate-50/50 p-3" open>
+          <summary className="list-none [&::-webkit-details-marker]:hidden cursor-pointer text-xs font-black text-slate-700 flex items-center justify-between gap-2">
+            <span className="flex min-w-0 items-center gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-500" />
+              <span className="truncate">{dashboardMode === 'overall' ? '特别关注学生 / 整体偏弱项目' : '特别关注学生 / 单项区间分布'}</span>
+            </span>
+            <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="mt-3 grid grid-cols-1 xl:grid-cols-[1fr_280px] gap-3">
+            {dashboardMode === 'overall'
+              ? renderFocusStudents(analysis.fastestImprovers, analysis.continuousDeclines, analysis.highVolatility)
+              : renderFocusStudents(eventAnalysis.fastestImprovers, eventAnalysis.continuousDeclines, eventAnalysis.highVolatility)}
+            <div className="rounded-xl border border-slate-100 bg-white p-3">
+              {dashboardMode === 'overall' ? (
+                <>
+                  <p className="text-[10px] font-black text-slate-400 mb-2">
+                    整体偏弱项目：{analysis.overallWeakestEvent?.label || '--'}
+                  </p>
+                  <div className="grid grid-cols-4 gap-2">
+                    {analysis.allEventStats.map(stat => (
+                      <div key={stat.event} className="min-w-0">
+                        <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                          <div
+                            className={cn('h-full rounded-full', analysis.overallWeakestEvent?.event === stat.event ? 'bg-amber-500' : 'bg-blue-500')}
+                            style={{ width: `${Math.min(100, (stat.averagePoint / 25) * 100)}%` }}
+                          />
+                        </div>
+                        <p className="mt-1 text-[10px] font-black text-slate-500 truncate">{stat.label}</p>
+                        <p className="text-[10px] font-bold text-slate-400">{stat.averagePoint.toFixed(1)}</p>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-[10px] font-black text-slate-400 mb-2">最近一次区间分布</p>
+                  {latestSnapshot ? renderDistribution(latestSnapshot.distribution) : <p className="text-xs font-bold text-slate-300">暂无数据</p>}
+                </>
+              )}
+            </div>
+          </div>
+        </details>
+
+        <details className="group mt-3 rounded-xl border border-slate-100 bg-slate-50/50 p-3">
+          <summary className="list-none [&::-webkit-details-marker]:hidden cursor-pointer text-xs font-black text-slate-700 flex items-center justify-between gap-2">
+            <span className="flex min-w-0 items-center gap-2">
+              <Activity className="w-3.5 h-3.5 shrink-0 text-blue-500" />
+              <span className="truncate">每次测试分析、区间分布、提分板 / 退后板</span>
+            </span>
+            <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="mt-3 flex gap-3 overflow-x-auto pb-1 custom-scrollbar">
+            {dashboardSnapshots.length > 0
+              ? dashboardSnapshots.map(snapshot => renderTestSnapshot(snapshot))
+              : <p className="text-xs font-bold text-slate-300">暂无测试分析</p>}
+          </div>
+        </details>
+      </section>
+      ) : (
+        renderCollapsedPanelBar('dashboard', '数据看板', collapsedDashboardLabel, BarChart3)
+      )}
+
+      {expandedPanel === 'rankings' ? (
+      <section className="panel-switch-in flex-1 min-h-0 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden transition-all duration-300 ease-out">
+        <div className="p-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 bg-slate-50 shrink-0">
+          <div className="flex flex-wrap items-center gap-2">
             <div className="bg-white border border-slate-200 rounded-lg flex items-center pr-2 py-0.5">
                <Calendar className="w-3.5 h-3.5 text-slate-400 mx-2" />
                <select 
                  className="text-xs bg-transparent font-bold text-slate-700 outline-none pr-4"
-                 value={selectedDate}
-                 onChange={(e) => setSelectedDate(e.target.value)}
+                 value={selectedTestKey}
+                 onChange={(e) => setSelectedTestKey(e.target.value)}
                >
-                 {availableDates.length > 0 ? availableDates.map(date => (
-                   <option key={date} value={date}>{date} 测试</option>
+                 {testOptions.length > 0 ? testOptions.map(option => (
+                   <option key={option.key} value={option.key}>{option.label}</option>
                  )) : <option value="">暂无测试</option>}
                </select>
             </div>
@@ -137,7 +513,15 @@ export default function Rankings({ students, records, onUpdateRecord, onDeleteRe
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+             <button
+               type="button"
+               onClick={() => setExpandedPanel('dashboard')}
+               className="hidden sm:inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-black text-slate-500 transition-all hover:border-blue-200 hover:text-blue-600"
+             >
+               看板
+               <ChevronDown className="h-3.5 w-3.5 -rotate-90" />
+             </button>
              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest hidden lg:block">共有 {rankedData.length} 位选手参测</div>
              <button onClick={handleExport} className="flex items-center gap-1.5 text-[11px] font-bold text-blue-600 hover:bg-blue-50 px-2.5 py-1 rounded-md transition-all">
                 <Download className="w-3.5 h-3.5" /> 导出报表
@@ -318,6 +702,9 @@ export default function Rankings({ students, records, onUpdateRecord, onDeleteRe
           )}
         </div>
       </section>
+      ) : (
+        renderCollapsedPanelBar('rankings', '成绩排行', `${collapsedRankingLabel} · ${rankedData.length} 位参测`, Trophy)
+      )}
       <ConfirmModal
         isOpen={!!confirmDelete}
         title="删除本次成绩？"

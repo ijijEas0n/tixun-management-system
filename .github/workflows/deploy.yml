@@ -34,6 +34,9 @@ jobs:
       - name: Check
         run: npm run lint
 
+      - name: Test
+        run: npm run test
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 

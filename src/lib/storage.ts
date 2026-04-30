@@ -1,6 +1,23 @@
 import { useState, useEffect } from 'react';
-import { AppData, AcademicYear, Student, TestRecord, ScoreSet } from '../types';
+import {
+  AppData,
+  AcademicYear,
+  Student,
+  TestRecord,
+  ScoreSet,
+  TestSession,
+  TestSessionGroupingVersion,
+  SportEventKey,
+} from '../types';
 import { calculatePoints } from './scoring';
+import { createDefaultTrialConfigs, createEmptyGroupingVersions } from './grouping';
+import { isSameRecordTarget, RecordTarget } from './testRecords';
+import { applyScoreSyncUndoSnapshots, ScoreSyncUndoSnapshot } from './scoreSync';
+import {
+  mergePrearrangedImportWithYearData,
+  PrearrangedImportResult,
+  PrearrangedStudentImportMode,
+} from './prearrangedImport';
 
 const STORAGE_KEY = 'fujian_sports_app_data';
 
@@ -8,12 +25,124 @@ const DEFAULT_DATA: AppData = {
   years: [{ id: 'y1', name: '2025' }],
   students: [],
   records: {},
+  testSessions: [],
 };
+
+const EVENTS: SportEventKey[] = ['hundred', 'shotPut', 'tripleJump', 'eightHundred'];
+
+function normalizeGroupingVersions(rawSession: any): Record<SportEventKey, TestSessionGroupingVersion[]> {
+  const empty = createEmptyGroupingVersions();
+
+  if (rawSession.groupingVersions) {
+    EVENTS.forEach(event => {
+      empty[event] = (rawSession.groupingVersions[event] || []).map((version: any, versionIndex: number) => ({
+        id: version.id || `${event}-legacy-${versionIndex}`,
+        name: version.name || `版本 ${versionIndex + 1}`,
+        event,
+        createdAt: version.createdAt || rawSession.date || new Date().toISOString(),
+        source: version.source || 'generated',
+        mode: version.mode || 'size',
+        groupSize: version.groupSize,
+        groupCount: version.groupCount,
+        groups: (version.groups || []).map((group: any, groupIndex: number) => ({
+          id: group.id || `${event}-legacy-group-${groupIndex}`,
+          name: group.name || `第${groupIndex + 1}组`,
+          marker: group.marker || '',
+          startTime: group.startTime || '',
+          gender: group.gender || (event === 'eightHundred' ? 'mixed' : 'male'),
+          members: (group.members || group.studentIds || []).map((member: any, memberIndex: number) => {
+            if (typeof member === 'string') {
+              return {
+                studentId: member,
+                lane: event === 'hundred' ? memberIndex + 1 : undefined,
+                order: memberIndex + 1,
+              };
+            }
+            return {
+              studentId: member.studentId,
+              lane: event === 'hundred' ? member.lane ?? memberIndex + 1 : undefined,
+              order: member.order ?? memberIndex + 1,
+              rank: member.rank,
+              note: member.note || '',
+            };
+          }),
+        })),
+      }));
+    });
+    return empty;
+  }
+
+  if (rawSession.groupings) {
+    EVENTS.forEach(event => {
+      const groups = rawSession.groupings[event] || [];
+      if (groups.length === 0) return;
+      empty[event] = [{
+        id: `${event}-legacy-version`,
+        name: '版本 1',
+        event,
+        createdAt: rawSession.date || new Date().toISOString(),
+        source: 'generated',
+        mode: 'size',
+        groups: groups.map((group: any, groupIndex: number) => ({
+          id: group.id || `${event}-legacy-group-${groupIndex}`,
+          name: group.name || `第${groupIndex + 1}组`,
+          marker: group.marker || '',
+          startTime: group.startTime || '',
+          gender: group.gender || (event === 'eightHundred' ? 'mixed' : 'male'),
+          members: (group.studentIds || []).map((studentId: string, memberIndex: number) => ({
+            studentId,
+            lane: event === 'hundred' ? memberIndex + 1 : undefined,
+            order: memberIndex + 1,
+          })),
+        })),
+      }];
+    });
+  }
+
+  return empty;
+}
+
+function normalizeTestSessions(rawSessions: any[] | undefined): TestSession[] {
+  return (rawSessions || []).map((session: any) => {
+    const groupingVersions = normalizeGroupingVersions(session);
+    const activeVersionIds: Partial<Record<SportEventKey, string>> = { ...(session.activeVersionIds || {}) };
+    const entryVersionIds: Partial<Record<SportEventKey, string>> = { ...(session.entryVersionIds || {}) };
+
+    EVENTS.forEach(event => {
+      if (!activeVersionIds[event] && groupingVersions[event][0]) {
+        activeVersionIds[event] = groupingVersions[event][groupingVersions[event].length - 1].id;
+      }
+      if (
+        entryVersionIds[event] &&
+        !groupingVersions[event].some(version => version.id === entryVersionIds[event])
+      ) {
+        delete entryVersionIds[event];
+      }
+    });
+
+    return {
+      id: session.id || Date.now().toString() + Math.random(),
+      name: session.name || '未命名测试',
+      date: session.date || new Date().toISOString().split('T')[0],
+      yearId: session.yearId || 'y1',
+      absentStudentIds: Array.isArray(session.absentStudentIds) ? session.absentStudentIds : [],
+      activeVersionIds,
+      entryVersionIds,
+      groupingVersions,
+      trialConfigs: {
+        ...createDefaultTrialConfigs(),
+        ...(session.trialConfigs || {}),
+      },
+      groupScheduleConfigs: session.groupScheduleConfigs || {},
+    };
+  });
+}
 
 export function useData() {
   const [data, setData] = useState<AppData>(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     const parsed = saved ? JSON.parse(saved) : DEFAULT_DATA;
+    const testSessions = normalizeTestSessions(parsed.testSessions || parsed.phaseTests);
     
     // Data Migration: Ensure all students have a studentNo
     let modified = false;
@@ -45,9 +174,9 @@ export function useData() {
     );
 
     if (modified) {
-      return { ...parsed, students: migratedStudents, records };
+      return { ...parsed, students: migratedStudents, records, testSessions };
     }
-    return { ...parsed, records };
+    return { ...parsed, records, testSessions };
   });
 
   const [currentYearId, setCurrentYearId] = useState<string>(() => {
@@ -87,6 +216,7 @@ export function useData() {
         years: newYears,
         students: prev.students.filter(s => s.yearId !== id),
         records: newRecords,
+        testSessions: prev.testSessions.filter(session => session.yearId !== id),
       };
     });
   };
@@ -122,30 +252,63 @@ export function useData() {
     return newStudent;
   };
 
-  const batchAddStudents = (studentList: { name: string; gender: 'male' | 'female' }[], yearId: string) => {
-    const year = data.years.find(y => y.id === yearId);
-    const yearPrefix = year ? year.name.slice(-2) : '00';
-    const yearStudents = data.students.filter(s => s.yearId === yearId);
-    
-    let nextNum = 1;
-    if (yearStudents.length > 0) {
-      const maxNo = Math.max(...yearStudents.map(s => parseInt(s.studentNo.slice(-3))));
-      nextNum = maxNo + 1;
-    }
-    
-    const newStudents: Student[] = studentList.map(item => {
-      const studentNo = `${yearPrefix}${String(nextNum).padStart(3, '0')}`;
-      nextNum++;
-      return {
-        id: Date.now().toString() + Math.random(),
-        studentNo,
-        name: item.name,
-        gender: item.gender,
-        yearId
-      };
-    });
+  const batchAddStudents = (studentList: { name: string; gender: 'male' | 'female'; studentNo?: string }[], yearId: string) => {
+    setData(prev => {
+      const year = prev.years.find(y => y.id === yearId);
+      const yearPrefix = year ? year.name.slice(-2) : '00';
+      const yearStudents = prev.students.filter(s => s.yearId === yearId);
+      const usedStudentNos = new Set(yearStudents.map(student => student.studentNo).filter(Boolean));
+      const existingKeys = new Set(yearStudents.map(student => `${student.studentNo || ''}:${student.name}`));
+      const existingNames = new Set(yearStudents.map(student => student.name));
+      const newStudents: Student[] = [];
 
-    setData(prev => ({ ...prev, students: [...prev.students, ...newStudents] }));
+      const numericSuffixes = yearStudents
+        .map(student => parseInt((student.studentNo || '').slice(-3), 10))
+        .filter(Number.isFinite);
+      let nextNum = numericSuffixes.length > 0 ? Math.max(...numericSuffixes) + 1 : 1;
+
+      const nextGeneratedNo = () => {
+        let studentNo = `${yearPrefix}${String(nextNum).padStart(3, '0')}`;
+        while (usedStudentNos.has(studentNo)) {
+          nextNum += 1;
+          studentNo = `${yearPrefix}${String(nextNum).padStart(3, '0')}`;
+        }
+        nextNum += 1;
+        usedStudentNos.add(studentNo);
+        return studentNo;
+      };
+
+      studentList.forEach(item => {
+        const name = item.name.trim();
+        if (!name) return;
+        const providedNo = item.studentNo?.trim() || '';
+        const duplicate = providedNo
+          ? existingKeys.has(`${providedNo}:${name}`)
+          : existingNames.has(name);
+        if (duplicate) return;
+
+        const studentNo = providedNo || nextGeneratedNo();
+        existingKeys.add(`${studentNo}:${name}`);
+        existingNames.add(name);
+        if (studentNo) usedStudentNos.add(studentNo);
+        newStudents.push({
+          id: Date.now().toString() + Math.random(),
+          studentNo,
+          name,
+          gender: item.gender,
+          yearId,
+        });
+      });
+
+      return { ...prev, students: [...prev.students, ...newStudents] };
+    });
+  };
+
+  const updateStudent = (id: string, updates: Partial<Student>) => {
+    setData(prev => ({
+      ...prev,
+      students: prev.students.map(student => student.id === id ? { ...student, ...updates } : student),
+    }));
   };
 
   const batchDeleteStudents = (ids: string[]) => {
@@ -156,6 +319,22 @@ export function useData() {
         ...prev,
         students: prev.students.filter(s => !ids.includes(s.id)),
         records: newRecords,
+        testSessions: prev.testSessions.map(session => ({
+          ...session,
+          absentStudentIds: (session.absentStudentIds || []).filter(studentId => !ids.includes(studentId)),
+          groupingVersions: Object.fromEntries(
+            EVENTS.map(event => [
+              event,
+              session.groupingVersions[event].map(version => ({
+                ...version,
+                groups: version.groups.map(group => ({
+                  ...group,
+                  members: group.members.filter(member => !ids.includes(member.studentId)),
+                })),
+              })),
+            ]),
+          ) as Record<SportEventKey, TestSessionGroupingVersion[]>,
+        })),
       };
     });
   };
@@ -179,16 +358,16 @@ export function useData() {
     });
   };
 
-  const updateRecordsBatch = (updates: { studentId: string; date: string; scores: Partial<ScoreSet> }[]) => {
+  const updateRecordsBatch = (updates: Array<{ studentId: string; scores: Partial<ScoreSet> } & RecordTarget>) => {
     setData(prev => {
       const newRecords = { ...prev.records };
       
-      updates.forEach(({ studentId, date, scores }) => {
+      updates.forEach(({ studentId, date, testSessionId, testName, scores }) => {
         const student = prev.students.find(s => s.id === studentId);
         if (!student) return;
 
         const studentRecords = [...(newRecords[studentId] || [])];
-        const existingRecordIndex = studentRecords.findIndex(r => r.date === date);
+        const existingRecordIndex = studentRecords.findIndex(r => isSameRecordTarget(r, { date, testSessionId }));
 
         if (existingRecordIndex > -1) {
           const existing = studentRecords[existingRecordIndex];
@@ -207,6 +386,9 @@ export function useData() {
           
           studentRecords[existingRecordIndex] = {
             ...existing,
+            date,
+            testSessionId: testSessionId || existing.testSessionId,
+            testName: testName || existing.testName,
             scores: mergedScores,
             points,
           };
@@ -227,6 +409,8 @@ export function useData() {
           studentRecords.push({
             id: Date.now().toString() + Math.random(),
             date,
+            testSessionId,
+            testName,
             scores: fullScores,
             points,
           });
@@ -238,6 +422,111 @@ export function useData() {
     });
   };
 
+  const revertScoreSyncBatch = (
+    target: RecordTarget,
+    event: SportEventKey,
+    snapshots: ScoreSyncUndoSnapshot[],
+  ) => {
+    setData(prev => ({
+      ...prev,
+      records: applyScoreSyncUndoSnapshots({
+        records: prev.records,
+        students: prev.students,
+        target,
+        event,
+        snapshots,
+      }),
+    }));
+  };
+
+  const addTestSession = (name: string, date: string, yearId: string, absentStudentIds: string[] = []) => {
+    const newSession: TestSession = {
+      id: Date.now().toString() + Math.random(),
+      name,
+      date,
+      yearId,
+      absentStudentIds,
+      activeVersionIds: {},
+      entryVersionIds: {},
+      groupingVersions: createEmptyGroupingVersions(),
+      trialConfigs: createDefaultTrialConfigs(),
+      groupScheduleConfigs: {},
+    };
+    setData(prev => ({ ...prev, testSessions: [...prev.testSessions, newSession] }));
+    return newSession;
+  };
+
+  const updateTestSession = (sessionId: string, updates: Partial<TestSession>) => {
+    setData(prev => ({
+      ...prev,
+      testSessions: prev.testSessions.map(session => (
+        session.id === sessionId ? { ...session, ...updates } : session
+      )),
+    }));
+  };
+
+  const deleteTestSession = (sessionId: string) => {
+    setData(prev => ({
+      ...prev,
+      testSessions: prev.testSessions.filter(session => session.id !== sessionId),
+    }));
+  };
+
+  const addGroupingVersion = (
+    sessionId: string,
+    event: SportEventKey,
+    version: TestSessionGroupingVersion,
+  ) => {
+    setData(prev => ({
+      ...prev,
+      testSessions: prev.testSessions.map(session => {
+        if (session.id !== sessionId) return session;
+        return {
+          ...session,
+          activeVersionIds: {
+            ...session.activeVersionIds,
+            [event]: version.id,
+          },
+          groupingVersions: {
+            ...session.groupingVersions,
+            [event]: [...session.groupingVersions[event], version],
+          },
+        };
+      }),
+    }));
+  };
+
+  const updateGroupingVersion = (
+    sessionId: string,
+    event: SportEventKey,
+    versionId: string,
+    updates: Partial<TestSessionGroupingVersion>,
+  ) => {
+    setData(prev => ({
+      ...prev,
+      testSessions: prev.testSessions.map(session => {
+        if (session.id !== sessionId) return session;
+        return {
+          ...session,
+          groupingVersions: {
+            ...session.groupingVersions,
+            [event]: session.groupingVersions[event].map(version => (
+              version.id === versionId ? { ...version, ...updates } : version
+            )),
+          },
+        };
+      }),
+    }));
+  };
+
+  const applyPrearrangedImport = (
+    yearId: string,
+    importResult: PrearrangedImportResult,
+    mode: PrearrangedStudentImportMode = 'appendMissing',
+  ) => {
+    setData(prev => mergePrearrangedImportWithYearData(prev, yearId, importResult, mode));
+  };
+
   return {
     data,
     setData,
@@ -247,10 +536,18 @@ export function useData() {
     deleteYear,
     updateYear,
     addStudent,
+    updateStudent,
     deleteStudent,
     batchDeleteStudents,
     deleteRecord,
     updateRecordsBatch,
+    revertScoreSyncBatch,
     batchAddStudents,
+    addTestSession,
+    updateTestSession,
+    deleteTestSession,
+    addGroupingVersion,
+    updateGroupingVersion,
+    applyPrearrangedImport,
   };
 }

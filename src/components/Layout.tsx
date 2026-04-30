@@ -1,5 +1,5 @@
 import React from 'react';
-import { Menu, X, Trophy, Users, Edit3, Calendar, Plus, ExternalLink } from 'lucide-react';
+import { Menu, X, Trophy, Users, ClipboardCheck, Calendar, Plus, ExternalLink, Edit3 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { AcademicYear } from '../types';
@@ -19,7 +19,8 @@ export default function Layout({
 }: LayoutProps) {
   const navItems = [
     { id: 'rankings', label: '成绩排行', icon: Trophy },
-    { id: 'entry', label: '快速录入', icon: Edit3 },
+    { id: 'grouping', label: '测试分组', icon: ClipboardCheck },
+    { id: 'entry', label: '成绩录入', icon: Edit3 },
     { id: 'students', label: '学生档案', icon: Users },
   ];
 
@@ -29,7 +30,7 @@ export default function Layout({
     <div className="flex h-screen w-full overflow-hidden bg-[#F0F2F5] text-slate-900 font-sans selection:bg-blue-100">
       {/* Left Sidebar: Year Switcher */}
       <aside className="w-16 flex flex-col items-center py-4 bg-[#0F172A] text-white space-y-4 shrink-0 transition-all">
-        <div className="w-10 h-10 bg-orange-500 rounded-lg flex items-center justify-center font-black text-xl shadow-lg shadow-orange-500/20 mb-2">径</div>
+        <div className="w-10 h-10 bg-orange-500 rounded-lg flex items-center justify-center font-black text-xl shadow-lg shadow-orange-500/20 mb-2">宇</div>
         <div className="flex flex-col space-y-3 flex-1 w-full items-center custom-scrollbar overflow-y-auto">
           {years.map(year => (
             <button
@@ -67,7 +68,7 @@ export default function Layout({
         <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0 z-20 shadow-sm">
           <div className="flex items-center space-x-8">
             <h1 className="text-sm md:text-base font-black text-slate-800 flex items-center">
-              径技与君体训管理系统 
+              宇众体训管理系统
               <span className="text-blue-600 text-xs font-bold ml-2 bg-blue-50 px-2 py-0.5 rounded">[{currentYear?.name || '未知'}学年]</span>
             </h1>
             
@@ -125,7 +126,7 @@ export default function Layout({
           </div>
           <div className="flex items-center space-x-2">
             <span className="w-2 h-2 rounded-full bg-green-500 border border-slate-900"></span>
-            <span className="font-bold opacity-80">本地数据已加密同步</span>
+            <span className="font-bold opacity-80">本地数据已保存</span>
           </div>
         </footer>
       </main>

@@ -4,11 +4,12 @@ import { Student, StudentGender } from '../types';
 import { getFirstLetter, cn } from '../lib/utils';
 import * as XLSX from 'xlsx';
 import ConfirmModal from './ConfirmModal';
+import { parseStudentImportWorkbook } from '../lib/studentImport';
 
 interface StudentListProps {
   students: Student[];
   onAdd: (name: string, gender: StudentGender) => void;
-  onBatchAdd: (students: { name: string; gender: StudentGender }[]) => void;
+  onBatchAdd: (students: { name: string; gender: StudentGender; studentNo?: string }[]) => void;
   onDelete: (id: string) => void;
   onBatchDelete: (ids: string[]) => void;
   onSelect: (student: Student) => void;
@@ -23,6 +24,7 @@ export default function StudentList({ students, onAdd, onBatchAdd, onDelete, onB
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [isBatchDeleting, setIsBatchDeleting] = useState(false);
+  const [importMessage, setImportMessage] = useState('');
 
   const filteredStudents = useMemo(() => {
     return students
@@ -82,21 +84,16 @@ export default function StudentList({ students, onAdd, onBatchAdd, onDelete, onB
     reader.onload = (event) => {
       const data = new Uint8Array(event.target?.result as ArrayBuffer);
       const workbook = XLSX.read(data, { type: 'array' });
-      const sheetName = workbook.SheetNames[0];
-      const items = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]) as any[];
-      
-      const newStudentsBatch: { name: string; gender: StudentGender }[] = [];
-      items.forEach(item => {
-        const name = item['姓名'] || item['姓名 '] || item.name || item.Name;
-        const genderRaw = (item['性别'] || item['性别 '] || item.gender || item.Gender || '').toString();
-        const gender: StudentGender = genderRaw.includes('女') || genderRaw.toLowerCase().includes('female') ? 'female' : 'male';
-        if (name) {
-          newStudentsBatch.push({ name: name.toString().trim(), gender });
-        }
-      });
-      
+      const sheets = Object.fromEntries(workbook.SheetNames.map(sheetName => [
+        sheetName,
+        XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, defval: '' }) as unknown[][],
+      ]));
+      const newStudentsBatch = parseStudentImportWorkbook(sheets);
       if (newStudentsBatch.length > 0) {
         onBatchAdd(newStudentsBatch);
+        setImportMessage(`已读取 ${newStudentsBatch.length} 名学生，重复档案会自动跳过`);
+      } else {
+        setImportMessage('没有识别到学生名单');
       }
     };
     reader.readAsArrayBuffer(file);
@@ -140,6 +137,11 @@ export default function StudentList({ students, onAdd, onBatchAdd, onDelete, onB
                  </button>
                ))}
              </div>
+             {importMessage && (
+               <div className="text-[11px] font-bold text-slate-400 truncate max-w-40">
+                 {importMessage}
+               </div>
+             )}
           </div>
           
           <div className="flex items-center space-x-2">

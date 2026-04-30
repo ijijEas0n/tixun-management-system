@@ -321,7 +321,7 @@ export default function DataEntry({ students, onSaveBatch }: DataEntryProps) {
                    exit={{ opacity: 0, y: -10 }}
                    className="flex items-center gap-1.5 text-[10px] font-black text-green-600 uppercase tracking-widest"
                  >
-                   <CheckCircle className="w-3 h-3" /> 数据已批量同步至云端
+                   <CheckCircle className="w-3 h-3" /> 数据已保存到本机
                  </motion.div>
                )}
              </AnimatePresence>
@@ -336,7 +336,7 @@ export default function DataEntry({ students, onSaveBatch }: DataEntryProps) {
               disabled={Object.values(allInputs).every(obj => Object.keys(obj).length === 0)}
               className="flex-1 sm:flex-none bg-blue-600 text-white px-8 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest shadow-xl shadow-blue-200 hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-30 disabled:grayscale"
             >
-              一键保存同步 (FINAL SYNC)
+              保存本次录入
             </button>
           </div>
         </footer>
