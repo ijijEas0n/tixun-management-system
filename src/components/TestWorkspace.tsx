@@ -70,7 +70,7 @@ import {
 } from '../lib/scoreSync';
 import { buildGroupPerformanceAnalysis } from '../lib/performanceAnalysis';
 import { parseVoiceScoreText, VoiceNoteAssignment } from '../lib/voiceScoreParser';
-import { formatTencentVoiceError } from '../lib/tencentVoiceError';
+import { formatTencentVoiceError, isTencentVoiceCloseCode } from '../lib/tencentVoiceError';
 import {
   getDefaultVoiceApiSettings,
   loadVoiceApiSettings,
@@ -888,8 +888,11 @@ export default function TestWorkspace({
         setIsProcessingVoice(false);
         showVoiceMessage(voiceResultTextRef.current ? '识别已结束，确认后可填入成绩' : '识别结束，没有收到文本', voiceResultTextRef.current ? 'success' : 'error');
       };
+      let hasShownSdkError = false;
       recognizer.OnError = error => {
         if (voiceRecognizerRef.current !== recognizer && voiceStopReasonRef.current === 'manual') return;
+        if (hasShownSdkError && isTencentVoiceCloseCode(error, 1006)) return;
+        hasShownSdkError = true;
         resetVoiceRecognizer(false);
         setIsListening(false);
         setIsProcessingVoice(false);
