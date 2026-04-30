@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Activity, AlertTriangle, ArrowUp, BarChart3, ChevronDown, Download, Trophy, Calendar, Edit2, Check, X, Trash2 } from 'lucide-react';
+import { AlertTriangle, ArrowUp, BarChart3, ChevronDown, Download, Trophy, Calendar, Edit2, Check, X, Trash2 } from 'lucide-react';
 import { Student, TestRecord, ScoreSet, TestSession, SportEventKey } from '../types';
 import { formatTime800m, cn } from '../lib/utils';
 import { buildRankTestOptions, getRecordTestKey, RecordTarget } from '../lib/testRecords';
@@ -11,7 +11,6 @@ import {
   StudentChangeItem,
   StudentFastImproverItem,
   StudentVolatilityItem,
-  TestAnalysisSnapshot,
   TestTrendPoint,
 } from '../lib/performanceAnalysis';
 import * as XLSX from 'xlsx';
@@ -212,21 +211,6 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
     );
   };
 
-  const renderChangeList = (items: StudentChangeItem[], tone: 'up' | 'down') => (
-    <div className="space-y-1">
-      {items.length === 0 ? (
-        <p className="text-[11px] font-bold text-slate-300">暂无名单</p>
-      ) : items.slice(0, 6).map(item => (
-        <div key={item.student.id} className="flex items-center justify-between gap-2 text-[11px] font-bold">
-          <span className="truncate text-slate-700">{item.student.name}</span>
-          <span className={tone === 'up' ? 'text-emerald-600' : 'text-red-500'}>
-            {item.change > 0 ? '+' : ''}{item.change.toFixed(2)}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-
   const renderFocusStudents = (
     fastest: StudentFastImproverItem[],
     declines: StudentChangeItem[],
@@ -264,45 +248,6 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
         {volatile.length === 0 && <p className="text-[11px] font-bold text-slate-300">暂无数据</p>}
       </div>
     </div>
-  );
-
-  const renderTestSnapshot = (snapshot: TestAnalysisSnapshot) => (
-    <article key={snapshot.key} className="min-w-[270px] rounded-xl border border-slate-100 bg-white p-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="text-xs font-black text-slate-900 truncate">{snapshot.label}</h3>
-          <p className="text-[10px] font-bold text-slate-400 mt-0.5">{snapshot.recordedCount} 人 · {snapshot.date}</p>
-        </div>
-        <span className="text-[10px] font-black px-2 py-1 rounded-full bg-blue-50 text-blue-700">单次分析</span>
-      </div>
-      <div className="grid grid-cols-4 gap-1 mt-3">
-        {[
-          ['平均', snapshot.average],
-          ['最高', snapshot.max],
-          ['最低', snapshot.min],
-          ['众数', snapshot.mode],
-        ].map(([label, value]) => (
-          <div key={label as string} className="rounded-lg bg-slate-50 px-2 py-1.5">
-            <p className="text-[9px] font-black text-slate-400">{label as string}</p>
-            <p className="text-xs font-black text-slate-800">{formatScore(value as number | null)}</p>
-          </div>
-        ))}
-      </div>
-      <div className="mt-3">
-        <p className="text-[10px] font-black text-slate-400 mb-1.5">区间分布</p>
-        {renderDistribution(snapshot.distribution)}
-      </div>
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        <div>
-          <p className="text-[10px] font-black text-emerald-600 mb-1">提分板</p>
-          {renderChangeList(snapshot.progressBoard, 'up')}
-        </div>
-        <div>
-          <p className="text-[10px] font-black text-red-500 mb-1">退后板</p>
-          {renderChangeList(snapshot.regressionBoard, 'down')}
-        </div>
-      </div>
-    </article>
   );
 
   const dashboardSnapshots = dashboardMode === 'overall' ? analysis.testAnalyses : eventAnalysis.testAnalyses;
@@ -459,20 +404,6 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
           </div>
         </details>
 
-        <details className="group mt-3 rounded-xl border border-slate-100 bg-slate-50/50 p-3">
-          <summary className="list-none [&::-webkit-details-marker]:hidden cursor-pointer text-xs font-black text-slate-700 flex items-center justify-between gap-2">
-            <span className="flex min-w-0 items-center gap-2">
-              <Activity className="w-3.5 h-3.5 shrink-0 text-blue-500" />
-              <span className="truncate">每次测试分析、区间分布、提分板 / 退后板</span>
-            </span>
-            <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />
-          </summary>
-          <div className="mt-3 flex gap-3 overflow-x-auto pb-1 custom-scrollbar">
-            {dashboardSnapshots.length > 0
-              ? dashboardSnapshots.map(snapshot => renderTestSnapshot(snapshot))
-              : <p className="text-xs font-bold text-slate-300">暂无测试分析</p>}
-          </div>
-        </details>
       </section>
       ) : (
         renderCollapsedPanelBar('dashboard', '数据看板', collapsedDashboardLabel, BarChart3)

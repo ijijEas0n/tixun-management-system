@@ -120,3 +120,35 @@ assert.deepEqual(
     { studentId: 's2', value: '12.6' },
   ],
 );
+
+const shortStudentNoStudents: Student[] = [
+  { id: 'short-1', studentNo: '1', name: '叶子超', gender: 'male', yearId: 'y1' },
+];
+
+const shortStudentNoGroup: TestSessionGroup = {
+  id: 'short-g1',
+  name: '男生第1组',
+  gender: 'male',
+  members: [
+    { studentId: 'short-1', lane: 4, order: 4 },
+  ],
+};
+
+const shortStudentNoResult = parseVoiceScoreText({
+  text: '叶子超第三次12.8',
+  students: shortStudentNoStudents,
+  group: shortStudentNoGroup,
+  event: 'hundred',
+  trialCount: 3,
+});
+
+assert.deepEqual(
+  shortStudentNoResult.assignments.map(item => ({
+    studentId: item.studentId,
+    trialIndex: item.trialIndex,
+    value: item.value,
+  })),
+  [
+    { studentId: 'short-1', trialIndex: 2, value: '12.8' },
+  ],
+);

@@ -94,6 +94,17 @@ function parseNumberish(input: string): number | null {
   return parseSimpleChineseInteger(text);
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripStudentNo(text: string, studentNo: string) {
+  const no = studentNo.trim();
+  if (!no) return text;
+  const pattern = new RegExp(`(^|[^\\d.])#?\\s*${escapeRegExp(no)}(?=$|[^\\d.])`, 'g');
+  return text.replace(pattern, '$1 ');
+}
+
 function addImplicitSegmentBreaks(text: string): string {
   const positionPattern = /(\d{1,2}|[一二三四五六七八九]|十[一二三四五六七八九]?|[二三]十[一二三四五六七八九]?)\s*(?:道|到|号|顺序|位)/g;
   return text.replace(positionPattern, (match, _position, offset, fullText) => {
@@ -153,12 +164,13 @@ function stripKnownWords(segment: string, student?: Student): string {
   let text = segment;
   if (student) {
     text = text.replaceAll(student.name, ' ');
-    if (student.studentNo) text = text.replaceAll(student.studentNo, ' ');
   }
-  return text
+  text = text
     .replace(/第\s*[零〇一二两三四五六七八九十\d]+\s*次/g, ' ')
     .replace(/[零〇一二两三四五六七八九十\d]+\s*(?:道|到|号|顺序|位)/g, ' ')
-    .replace(/成绩|录入|结果|是|为/g, ' ')
+    .replace(/成绩|录入|结果|是|为/g, ' ');
+  if (student?.studentNo) text = stripStudentNo(text, student.studentNo);
+  return text
     .trim();
 }
 
@@ -226,7 +238,7 @@ function extractNote(segment: string, student?: Student): string | null {
   if (noteIndex < 0) return null;
   let note = segment.slice(noteIndex + 2).trim();
   if (student) {
-    note = note.replace(student.name, '').replace(student.studentNo, '').trim();
+    note = stripStudentNo(note.replace(student.name, ''), student.studentNo).trim();
   }
   return note || null;
 }
