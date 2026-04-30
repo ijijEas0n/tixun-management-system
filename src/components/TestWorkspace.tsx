@@ -70,6 +70,7 @@ import {
 } from '../lib/scoreSync';
 import { buildGroupPerformanceAnalysis } from '../lib/performanceAnalysis';
 import { parseVoiceScoreText, VoiceNoteAssignment } from '../lib/voiceScoreParser';
+import { formatTencentVoiceError } from '../lib/tencentVoiceError';
 import {
   getDefaultVoiceApiSettings,
   loadVoiceApiSettings,
@@ -199,13 +200,7 @@ function createTencentSignCallback(secretKey: string) {
 function formatTencentSdkError(error: unknown) {
   if (typeof error === 'string') return error;
   if (error instanceof DOMException) return getMicrophoneAccessErrorMessage(error);
-  if (error && typeof error === 'object') {
-    const maybeMessage = (error as { message?: unknown; reason?: unknown; code?: unknown }).message ||
-      (error as { reason?: unknown }).reason ||
-      (error as { code?: unknown }).code;
-    if (maybeMessage) return String(maybeMessage);
-  }
-  return '腾讯云语音识别失败，请检查 API 设置或网络';
+  return formatTencentVoiceError(error);
 }
 
 function getDraftKey(sessionId: string, event: SportEventKey, versionId: string) {
