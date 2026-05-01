@@ -2,9 +2,9 @@ import React, { useState, useMemo } from 'react';
 import { Search, UserPlus, Upload, Trash2, ChevronRight, User } from 'lucide-react';
 import { Student, StudentGender } from '../types';
 import { getFirstLetter, cn } from '../lib/utils';
-import * as XLSX from 'xlsx';
 import ConfirmModal from './ConfirmModal';
 import { parseStudentImportWorkbook } from '../lib/studentImport';
+import { readWorkbookMatrices } from '../lib/tableWorkbook';
 
 interface StudentListProps {
   students: Student[];
@@ -77,17 +77,11 @@ export default function StudentList({ students, onAdd, onBatchAdd, onDelete, onB
     }
   };
 
-  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const data = new Uint8Array(event.target?.result as ArrayBuffer);
-      const workbook = XLSX.read(data, { type: 'array' });
-      const sheets = Object.fromEntries(workbook.SheetNames.map(sheetName => [
-        sheetName,
-        XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, defval: '' }) as unknown[][],
-      ]));
+    try {
+      const sheets = await readWorkbookMatrices(file);
       const newStudentsBatch = parseStudentImportWorkbook(sheets);
       if (newStudentsBatch.length > 0) {
         onBatchAdd(newStudentsBatch);
@@ -95,8 +89,9 @@ export default function StudentList({ students, onAdd, onBatchAdd, onDelete, onB
       } else {
         setImportMessage('没有识别到学生名单');
       }
-    };
-    reader.readAsArrayBuffer(file);
+    } catch {
+      setImportMessage('表格读取失败，请检查文件格式');
+    }
     e.target.value = '';
   };
 
@@ -155,7 +150,7 @@ export default function StudentList({ students, onAdd, onBatchAdd, onDelete, onB
             )}
             <label className="cursor-pointer bg-white border border-slate-200 text-slate-600 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-all flex items-center gap-1.5 text-xs font-bold">
                <Upload className="w-3.5 h-3.5" /> 导入表格
-               <input type="file" className="hidden" accept=".xlsx, .xls, .csv" onChange={handleImport} />
+               <input type="file" className="hidden" accept=".xlsx, .csv" onChange={handleImport} />
             </label>
             <button 
               onClick={() => setIsAdding(true)}

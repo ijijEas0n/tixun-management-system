@@ -147,3 +147,56 @@ assert.equal(
   false,
   'imported groups do not keep duplicate generated student ids for matched students',
 );
+
+const sameNameImport = parsePrearrangedWorkbook({
+  百米: [
+    ['时间', '道次', '姓名', '序号'],
+    ['09:00', '1', '张伟', '003'],
+  ],
+}, {
+  fileName: '2026.5.2测试.xlsx',
+  yearId: 'y1',
+  now: '2026-05-02T08:00:00.000Z',
+});
+const sameNameData: AppData = {
+  ...oldData,
+  students: [
+    { id: 'zhang-001', studentNo: '001', name: '张伟', gender: 'male', yearId: 'y1' },
+    { id: 'zhang-002', studentNo: '002', name: '张伟', gender: 'male', yearId: 'y1' },
+  ],
+  records: {},
+  testSessions: [],
+};
+const sameNameMerged = mergePrearrangedImportWithYearData(sameNameData, 'y1', sameNameImport, 'appendMissing');
+assert.equal(
+  sameNameMerged.students.some(student => student.studentNo === '003' && student.name === '张伟'),
+  true,
+  'same-name import with a different number creates a distinct student',
+);
+const sameNameSession = sameNameMerged.testSessions.find(session => session.id === sameNameImport.testSession.id)!;
+const sameNameMemberId = sameNameSession.groupingVersions.hundred[0].groups[0].members[0].studentId;
+assert.equal(
+  sameNameMerged.students.find(student => student.id === sameNameMemberId)?.studentNo,
+  '003',
+  'same-name imported grouping points at the imported student number',
+);
+
+const femaleImport = parsePrearrangedWorkbook({
+  名单: [
+    ['姓名', '序号'],
+    ['王丽', '8'],
+  ],
+  百米: [
+    ['时间', '道次', '姓名', '序号', '性别'],
+    ['09:00', '1', '王丽', '8', '女'],
+  ],
+}, {
+  fileName: '2026.5.3测试.xlsx',
+  yearId: 'y1',
+  now: '2026-05-03T08:00:00.000Z',
+});
+assert.equal(
+  femaleImport.students.find(student => student.name === '王丽')?.gender,
+  'female',
+  'event sheet gender updates a student first seen in the roster sheet',
+);

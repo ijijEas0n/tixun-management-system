@@ -29,16 +29,16 @@ export default function Layout({
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#F0F2F5] text-slate-900 font-sans selection:bg-blue-100">
       {/* Left Sidebar: Year Switcher */}
-      <aside className="w-16 flex flex-col items-center py-4 bg-[#0F172A] text-white space-y-4 shrink-0 transition-all">
-        <div className="w-10 h-10 bg-orange-500 rounded-lg flex items-center justify-center font-black text-xl shadow-lg shadow-orange-500/20 mb-2">宇</div>
-        <div className="flex flex-col space-y-3 flex-1 w-full items-center custom-scrollbar overflow-y-auto">
+      <aside className="w-14 flex flex-col items-center py-3 bg-[#0F172A] text-white space-y-3 shrink-0 transition-all">
+        <div className="w-9 h-9 bg-orange-500 rounded-lg flex items-center justify-center font-black text-lg shadow-lg shadow-orange-500/20 mb-1">宇</div>
+        <div className="flex flex-col space-y-2 flex-1 w-full items-center custom-scrollbar overflow-y-auto">
           {years.map(year => (
             <button
               key={year.id}
               onClick={() => setCurrentYearId(year.id)}
               title={`${year.name}年度`}
               className={cn(
-                "w-10 h-10 rounded-xl flex flex-col items-center justify-center transition-all duration-200 group relative",
+                "w-9 h-9 rounded-xl flex flex-col items-center justify-center transition-all duration-200 group relative",
                 currentYearId === year.id 
                   ? "bg-blue-600 text-white shadow-lg shadow-blue-600/30" 
                   : "text-slate-400 hover:bg-slate-800 hover:text-white"
@@ -52,7 +52,7 @@ export default function Layout({
           ))}
           <button 
             onClick={onManageYears}
-            className="w-10 h-10 rounded-xl border border-dashed border-slate-700 flex items-center justify-center text-slate-500 hover:text-slate-300 hover:border-slate-500 transition-all"
+            className="w-9 h-9 rounded-xl border border-dashed border-slate-700 flex items-center justify-center text-slate-500 hover:text-slate-300 hover:border-slate-500 transition-all"
           >
             <Plus className="w-5 h-5" />
           </button>
@@ -65,11 +65,11 @@ export default function Layout({
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col min-w-0">
         {/* Top Header */}
-        <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0 z-20 shadow-sm">
-          <div className="flex items-center space-x-8">
-            <h1 className="text-sm md:text-base font-black text-slate-800 flex items-center">
+        <header className="h-12 bg-white border-b border-slate-200 flex items-center justify-between px-4 shrink-0 z-20 shadow-sm">
+          <div className="flex items-center space-x-4 min-w-0">
+            <h1 className="text-xs md:text-sm font-black text-slate-800 flex items-center shrink-0">
               宇众体训管理系统
-              <span className="text-blue-600 text-xs font-bold ml-2 bg-blue-50 px-2 py-0.5 rounded">[{currentYear?.name || '未知'}学年]</span>
+              <span className="text-blue-600 text-[10px] font-bold ml-2 bg-blue-50 px-2 py-0.5 rounded">[{currentYear?.name || '未知'}学年]</span>
             </h1>
             
             <nav className="hidden md:flex space-x-1 bg-slate-100 p-1 rounded-lg text-xs">
@@ -78,7 +78,7 @@ export default function Layout({
                   key={item.id}
                   onClick={() => setActiveTab(item.id)}
                   className={cn(
-                    "px-4 py-1.5 rounded-md transition-all font-bold",
+                    "px-3 py-1 rounded-md transition-all font-bold",
                     activeTab === item.id 
                       ? "bg-white text-slate-900 shadow-sm" 
                       : "text-slate-500 hover:bg-white/60"

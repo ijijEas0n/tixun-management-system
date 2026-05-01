@@ -43,6 +43,9 @@ const updates = buildScoreSyncUpdates({
     s2: ['', '', ''],
     s3: ['13.1', '13.4', '13.2'],
   },
+  comments: {
+    s1: '起跑慢，后程好',
+  },
 });
 
 assert.deepEqual(
@@ -51,12 +54,60 @@ assert.deepEqual(
     groupName: update.groupName,
     best: update.scores.hundred,
     attempts: update.scores.hundredAttempts,
+    comment: update.comments?.hundred,
   })),
   [
-    { studentId: 's1', groupName: '男生第1组', best: 12, attempts: [12.2, 12, null] },
-    { studentId: 's3', groupName: '女生第1组', best: 13.1, attempts: [13.1, 13.4, 13.2] },
+    { studentId: 's1', groupName: '男生第1组', best: 12, attempts: [12.2, 12, null], comment: '起跑慢，后程好' },
+    { studentId: 's3', groupName: '女生第1组', best: 13.1, attempts: [13.1, 13.4, 13.2], comment: undefined },
   ],
   'sync all groups creates updates only for students with valid scores',
+);
+
+const tripleJumpUpdates = buildScoreSyncUpdates({
+  groups: [groups[0]],
+  event: 'tripleJump',
+  trialCount: 3,
+  target,
+  draft: {
+    s1: ['6.10', '6.25', '6.18'],
+  },
+});
+
+assert.deepEqual(
+  tripleJumpUpdates.map(update => ({
+    hundredAttempts: update.scores.hundredAttempts,
+    tripleJump: update.scores.tripleJump,
+    tripleJumpAttempts: update.scores.tripleJumpAttempts,
+  })),
+  [
+    { hundredAttempts: undefined, tripleJump: 6.25, tripleJumpAttempts: [6.1, 6.25, 6.18] },
+  ],
+  'triple jump attempts stay under the triple jump field and keep all attempts',
+);
+
+const commentOnlyUpdates = buildScoreSyncUpdates({
+  groups: [groups[0]],
+  event: 'hundred',
+  trialCount: 3,
+  target,
+  draft: {
+    s1: ['', '', ''],
+  },
+  comments: {
+    s1: '今天只记录起跑技术',
+  },
+});
+
+assert.deepEqual(
+  commentOnlyUpdates.map(update => ({
+    studentId: update.studentId,
+    scores: update.scores,
+    comments: update.comments,
+  })),
+  [
+    { studentId: 's1', scores: {}, comments: { hundred: '今天只记录起跑技术' } },
+  ],
+  'comment-only entry still creates a technical note update',
 );
 
 const existingRecords: Record<string, TestRecord[]> = {
@@ -73,6 +124,7 @@ const existingRecords: Record<string, TestRecord[]> = {
       eightHundred: null,
     },
     points: { hundred: 5, shotPut: 5, tripleJump: 0, eightHundred: 0, total: 10 },
+    comments: { hundred: '旧批注' },
   }],
   s3: [{
     id: 'r3',
@@ -103,10 +155,11 @@ assert.deepEqual(
     hadRecord: snapshot.hadRecord,
     previousValue: snapshot.previousValue,
     previousAttempts: snapshot.previousAttempts,
+    previousComment: snapshot.previousComment,
   })),
   [
-    { studentId: 's1', hadRecord: true, previousValue: 12.5, previousAttempts: [12.5, null, null] },
-    { studentId: 's3', hadRecord: true, previousValue: 13.1, previousAttempts: [13.1, 13.4, 13.2] },
+    { studentId: 's1', hadRecord: true, previousValue: 12.5, previousAttempts: [12.5, null, null], previousComment: '旧批注' },
+    { studentId: 's3', hadRecord: true, previousValue: 13.1, previousAttempts: [13.1, 13.4, 13.2], previousComment: undefined },
   ],
   'undo snapshots capture previous values before sync',
 );
@@ -119,6 +172,7 @@ const changedRecords: Record<string, TestRecord[]> = {
       hundred: 12,
       hundredAttempts: [12.2, 12, null],
     },
+    comments: { hundred: '新批注' },
   }],
   s2: [],
   s3: [{
@@ -153,6 +207,11 @@ assert.equal(
   restoredRecords.s1[0].scores.shotPut,
   9,
   'partial undo preserves other event scores in the same record',
+);
+assert.equal(
+  restoredRecords.s1[0].comments?.hundred,
+  '旧批注',
+  'partial undo restores the previous event comment',
 );
 
 const newlyCreatedRecords: Record<string, TestRecord[]> = {

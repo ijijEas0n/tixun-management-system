@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import { ArrowLeft, Trophy, Clock, Ruler, Target, TrendingUp } from 'lucide-react';
-import { Student, TestRecord } from '../types';
+import { ScoreSet, SportEventKey, Student, TestRecord } from '../types';
 import { formatTime800m, cn } from '../lib/utils';
 import { getStudentBestScores } from '../lib/studentStats';
 import { buildStudentReportRows } from '../lib/studentReport';
-import * as XLSX from 'xlsx';
+import { writeObjectRowsFile } from '../lib/tableWorkbook';
 
 interface StudentProfileProps {
   student: Student;
@@ -22,6 +22,26 @@ interface ProfileLineChartProps {
   data: ChartPoint[];
   dataKey: string;
   color: string;
+}
+
+const PROFILE_EVENTS: Array<{ id: SportEventKey; label: string; attemptKey: keyof ScoreSet }> = [
+  { id: 'hundred', label: '100m', attemptKey: 'hundredAttempts' },
+  { id: 'shotPut', label: '铅球', attemptKey: 'shotPutAttempts' },
+  { id: 'tripleJump', label: '三跳', attemptKey: 'tripleJumpAttempts' },
+  { id: 'eightHundred', label: '800m', attemptKey: 'eightHundredAttempts' },
+];
+
+function formatEventValue(event: SportEventKey, value: number | null | undefined) {
+  if (value === null || value === undefined) return '-';
+  if (event === 'eightHundred') return formatTime800m(value);
+  if (event === 'hundred') return `${value.toFixed(2)}s`;
+  return `${value.toFixed(2)}m`;
+}
+
+function formatAttempts(record: TestRecord, event: SportEventKey, attemptKey: keyof ScoreSet) {
+  const attempts = record.scores[attemptKey];
+  if (!Array.isArray(attempts) || attempts.length === 0) return '';
+  return attempts.map(value => formatEventValue(event, value)).join(' / ');
 }
 
 function ProfileLineChart({ data, dataKey, color }: ProfileLineChartProps) {
@@ -93,12 +113,9 @@ export default function StudentProfile({ student, records, onBack }: StudentProf
     { key: '总分', label: '综合总分 (分)', color: '#ef4444', icon: TrendingUp },
   ];
 
-  const handleExport = () => {
+  const handleExport = async () => {
     const rows = buildStudentReportRows(student, records);
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, '个人成绩报表');
-    XLSX.writeFile(workbook, `${student.name}_${student.studentNo}_个人成绩报表.xlsx`);
+    await writeObjectRowsFile(rows, '个人成绩报表', `${student.name}_${student.studentNo}_个人成绩报表.xlsx`);
   };
 
   return (
@@ -189,22 +206,32 @@ export default function StudentProfile({ student, records, onBack }: StudentProf
                   <span className="text-sm font-black text-blue-700 font-mono">{r.points.total.toFixed(2)}</span>
                 </div>
                 <div className="grid grid-cols-2 gap-y-1 gap-x-2">
-                   <div className="flex justify-between text-[10px] text-slate-500">
-                     <span>100m:</span>
-                     <span className="font-mono">{r.scores.hundred ? `${r.scores.hundred}s` : '-'}</span>
-                   </div>
-                   <div className="flex justify-between text-[10px] text-slate-500">
-                     <span>铅球:</span>
-                     <span className="font-mono">{r.scores.shotPut ? `${r.scores.shotPut}m` : '-'}</span>
-                   </div>
-                   <div className="flex justify-between text-[10px] text-slate-500">
-                     <span>三跳:</span>
-                     <span className="font-mono">{r.scores.tripleJump ? `${r.scores.tripleJump}m` : '-'}</span>
-                   </div>
-                   <div className="flex justify-between text-[10px] text-slate-500">
-                     <span>800m:</span>
-                     <span className="font-mono">{formatTime800m(r.scores.eightHundred)}</span>
-                   </div>
+                  {PROFILE_EVENTS.map(event => (
+                    <div key={event.id} className="flex justify-between text-[10px] text-slate-500">
+                      <span>{event.label}:</span>
+                      <span className="font-mono">{formatEventValue(event.id, r.scores[event.id])}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 space-y-1.5">
+                  {PROFILE_EVENTS.map(event => {
+                    const attempts = formatAttempts(r, event.id, event.attemptKey);
+                    const comment = r.comments?.[event.id] || '';
+                    if (!attempts && !comment) return null;
+                    return (
+                      <div key={event.id} className="rounded-lg bg-white/80 border border-slate-100 px-2 py-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[9px] font-black text-slate-400">{event.label}记录</span>
+                          {attempts && <span className="truncate text-[9px] font-mono font-bold text-slate-500">{attempts}</span>}
+                        </div>
+                        {comment && (
+                          <p className="mt-1 text-[10px] font-bold leading-4 text-amber-700">
+                            批注：{comment}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )) : (

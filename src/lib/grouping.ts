@@ -87,6 +87,18 @@ export function getEntryVersionId(
   return undefined;
 }
 
+export function getEntryViewVersionId({
+  entryVersionId,
+  selectedEntryVersionId,
+  viewVersionId,
+}: {
+  entryVersionId?: string;
+  selectedEntryVersionId?: string;
+  viewVersionId?: string;
+}): string | undefined {
+  return selectedEntryVersionId || entryVersionId || viewVersionId;
+}
+
 export function isGroupingLocked(session: TestSession, event: SportEventKey): boolean {
   const versionId = session.entryVersionIds?.[event];
   if (!versionId) return false;

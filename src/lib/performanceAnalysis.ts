@@ -145,6 +145,10 @@ function isValidScore(value: number | null | undefined): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
 
+function hasRecordedScore(record: TestRecord): boolean {
+  return ANALYSIS_EVENTS.some(event => isValidScore(record.scores[event.id]));
+}
+
 function average(values: number[]): number | null {
   if (values.length === 0) return null;
   return round(values.reduce((sum, value) => sum + value, 0) / values.length);
@@ -219,7 +223,8 @@ function buildTrend(
 ): TestTrendPoint[] {
   return buildRankTestOptions(records, students, testSessions)
     .map(option => {
-      const items = latestRecordsForKey(records, students, option.key);
+      const items = latestRecordsForKey(records, students, option.key)
+        .filter(item => hasRecordedScore(item.record));
       const totals = items.map(item => item.record.points.total).filter(Number.isFinite);
       return {
         key: option.key,
@@ -263,6 +268,10 @@ function valueFromRecord(record: TestRecord, event?: SportEventKey): number {
   return event ? round(record.points[event] * 4) : record.points.total;
 }
 
+function hasAnalysisValue(record: TestRecord, event?: SportEventKey): boolean {
+  return event ? isValidScore(record.scores[event]) : hasRecordedScore(record);
+}
+
 function buildPerTestAnalyses(
   records: Record<string, TestRecord[]>,
   students: Student[],
@@ -272,12 +281,15 @@ function buildPerTestAnalyses(
   const options = getSortedTestOptions(records, students, testSessions);
 
   return options.map((option, optionIndex) => {
-    const items = latestRecordsForKey(records, students, option.key);
+    const items = latestRecordsForKey(records, students, option.key)
+      .filter(item => hasAnalysisValue(item.record, event));
     const values = items
       .map(item => valueFromRecord(item.record, event))
       .filter(Number.isFinite);
     const previousOption = optionIndex > 0 ? options[optionIndex - 1] : null;
-    const previousItems = previousOption ? latestRecordsForKey(records, students, previousOption.key) : [];
+    const previousItems = previousOption
+      ? latestRecordsForKey(records, students, previousOption.key).filter(item => hasAnalysisValue(item.record, event))
+      : [];
     const previousByStudentId = new Map(previousItems.map(item => [item.student.id, item.record]));
     const changes = previousOption
       ? items.flatMap(item => {
@@ -326,7 +338,7 @@ function buildStudentChangesForEvent(
 ): StudentChangeItem[] {
   return students.flatMap(student => {
     const studentRecords = getSortedRecords(records[student.id] || [])
-      .filter(record => Number.isFinite(record.points[event]));
+      .filter(record => isValidScore(record.scores[event]) && Number.isFinite(record.points[event]));
     if (studentRecords.length < 2) return [];
     const first = studentRecords[0];
     const latest = studentRecords[studentRecords.length - 1];
@@ -342,7 +354,7 @@ function buildStudentChangesForEvent(
 function buildContinuousDeclinesForEvent(students: Student[], records: Record<string, TestRecord[]>, event: SportEventKey): StudentChangeItem[] {
   return students.flatMap(student => {
     const studentRecords = getSortedRecords(records[student.id] || [])
-      .filter(record => Number.isFinite(record.points[event]));
+      .filter(record => isValidScore(record.scores[event]) && Number.isFinite(record.points[event]));
     if (studentRecords.length < 3) return [];
     const latestThree = studentRecords.slice(-3);
     const values = latestThree.map(record => round(record.points[event] * 4));
@@ -360,6 +372,7 @@ function buildContinuousDeclinesForEvent(students: Student[], records: Record<st
 function buildHighVolatilityForEvent(students: Student[], records: Record<string, TestRecord[]>, event: SportEventKey): StudentVolatilityItem[] {
   return students.flatMap(student => {
     const values = (records[student.id] || [])
+      .filter(record => isValidScore(record.scores[event]))
       .map(record => round(record.points[event] * 4))
       .filter(Number.isFinite);
     if (values.length < 2) return [];
@@ -373,7 +386,7 @@ function buildHighVolatilityForEvent(students: Student[], records: Record<string
 function buildFastestImproversForEvent(students: Student[], records: Record<string, TestRecord[]>, event: SportEventKey): StudentFastImproverItem[] {
   return students.flatMap(student => {
     const studentRecords = getSortedRecords(records[student.id] || [])
-      .filter(record => Number.isFinite(record.points[event]));
+      .filter(record => isValidScore(record.scores[event]) && Number.isFinite(record.points[event]));
     if (studentRecords.length < 2) return [];
 
     let best: StudentFastImproverItem | null = null;
@@ -398,7 +411,7 @@ function buildFastestImproversForEvent(students: Student[], records: Record<stri
 function buildStudentChanges(students: Student[], records: Record<string, TestRecord[]>): StudentChangeItem[] {
   return students.flatMap(student => {
     const studentRecords = getSortedRecords(records[student.id] || [])
-      .filter(record => Number.isFinite(record.points.total));
+      .filter(record => hasRecordedScore(record) && Number.isFinite(record.points.total));
     if (studentRecords.length < 2) return [];
     const first = studentRecords[0];
     const latest = studentRecords[studentRecords.length - 1];
@@ -414,7 +427,7 @@ function buildStudentChanges(students: Student[], records: Record<string, TestRe
 function buildContinuousDeclines(students: Student[], records: Record<string, TestRecord[]>): StudentChangeItem[] {
   return students.flatMap(student => {
     const studentRecords = getSortedRecords(records[student.id] || [])
-      .filter(record => Number.isFinite(record.points.total));
+      .filter(record => hasRecordedScore(record) && Number.isFinite(record.points.total));
     if (studentRecords.length < 3) return [];
     const latestThree = studentRecords.slice(-3);
     const declined = latestThree[0].points.total > latestThree[1].points.total &&
@@ -432,6 +445,7 @@ function buildContinuousDeclines(students: Student[], records: Record<string, Te
 function buildHighVolatility(students: Student[], records: Record<string, TestRecord[]>): StudentVolatilityItem[] {
   return students.flatMap(student => {
     const totals = (records[student.id] || [])
+      .filter(hasRecordedScore)
       .map(record => record.points.total)
       .filter(Number.isFinite);
     if (totals.length < 2) return [];
@@ -445,7 +459,7 @@ function buildHighVolatility(students: Student[], records: Record<string, TestRe
 function buildFastestImprovers(students: Student[], records: Record<string, TestRecord[]>): StudentFastImproverItem[] {
   return students.flatMap(student => {
     const studentRecords = getSortedRecords(records[student.id] || [])
-      .filter(record => Number.isFinite(record.points.total));
+      .filter(record => hasRecordedScore(record) && Number.isFinite(record.points.total));
     if (studentRecords.length < 2) return [];
 
     let best: StudentFastImproverItem | null = null;
@@ -475,9 +489,9 @@ export function buildOverallPerformanceAnalysis(
   const trend = buildTrend(records, students, testSessions);
   const testAnalyses = buildPerTestAnalyses(records, students, testSessions);
   const latestTest = trend[trend.length - 1] || null;
-  const latestItems = latestTest ? latestRecordsForKey(records, students, latestTest.key) : [];
+  const latestItems = latestTest ? latestRecordsForKey(records, students, latestTest.key).filter(item => hasRecordedScore(item.record)) : [];
   const latestTotals = latestItems.map(item => item.record.points.total).filter(Number.isFinite);
-  const allRecordCount = students.reduce((count, student) => count + (records[student.id] || []).length, 0);
+  const allRecordCount = students.reduce((count, student) => count + (records[student.id] || []).filter(hasRecordedScore).length, 0);
   const eventStats = buildEventStats(latestItems);
   const allEventStats = buildOverallEventStats(records, students);
   const changes = buildStudentChanges(students, records);
@@ -557,7 +571,7 @@ export function buildGroupPerformanceAnalysis({
     const student = studentsById.get(member.studentId);
     if (!student) return [];
     const record = findCurrentRecord(records[student.id] || [], target);
-    return record ? [{ student, record }] : [];
+    return record && hasRecordedScore(record) ? [{ student, record }] : [];
   });
   const totals = memberItems.map(item => item.record.points.total).filter(Number.isFinite);
   const eventPoints = memberItems.map(item => item.record.points[event]).filter(Number.isFinite);
@@ -576,7 +590,7 @@ export function buildGroupPerformanceAnalysis({
     const studentRecords = records[student.id] || [];
     const current = findCurrentRecord(studentRecords, target);
     const previous = findPreviousRecord(studentRecords, target);
-    if (!current || !previous) return [];
+    if (!current || !previous || !hasRecordedScore(current) || !hasRecordedScore(previous)) return [];
     return [{
       student,
       firstTotal: previous.points.total,

@@ -4,6 +4,7 @@ import {
   createGroupingVersion,
   getDefaultGroupSize,
   getEntryVersionId,
+  getEntryViewVersionId,
   getDisplayGroupStartTime,
   isGroupingLocked,
   getLatestGroupingVersion,
@@ -154,6 +155,15 @@ assert.equal(
   ),
   undefined,
   'entry requires an explicitly confirmed version',
+);
+assert.equal(
+  getEntryViewVersionId({
+    entryVersionId: hundredVersion.id,
+    selectedEntryVersionId: totalCountVersion.id,
+    viewVersionId: hundredVersion.id,
+  }),
+  totalCountVersion.id,
+  'entry view keeps the manually selected version visible before confirmation',
 );
 
 const hundredGroup: TestSessionGroup = {

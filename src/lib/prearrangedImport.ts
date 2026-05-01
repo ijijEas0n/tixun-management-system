@@ -257,14 +257,16 @@ export function parsePrearrangedWorkbook(
         : parseGender(row[header.gender]);
       const studentKey = makeStudentKey(studentNo, name);
       const existingStudent = studentsByKey.get(studentKey);
-      const student = existingStudent || {
-        id: makeStudentId(options.yearId, studentNo, name),
-        studentNo,
-        name,
-        gender: gender || 'male',
-        yearId: options.yearId,
-      };
-      if (!existingStudent) studentsByKey.set(studentKey, student);
+      const student = existingStudent
+        ? (gender && existingStudent.gender !== gender ? { ...existingStudent, gender } : existingStudent)
+        : {
+            id: makeStudentId(options.yearId, studentNo, name),
+            studentNo,
+            name,
+            gender: gender || 'male',
+            yearId: options.yearId,
+          };
+      if (!existingStudent || student !== existingStudent) studentsByKey.set(studentKey, student);
 
       const order = header.order === undefined || header.order < 0
         ? event === 'hundred' ? parseLane(marker) : currentGroup.members.length + 1
@@ -376,9 +378,14 @@ export function replaceYearDataWithPrearrangedImport(
 }
 
 function findMatchingStudent(imported: Student, existingStudents: Student[]): Student | undefined {
-  return existingStudents.find(student => (
+  const exactMatch = existingStudents.find(student => (
     student.studentNo === imported.studentNo && student.name === imported.name
-  )) || existingStudents.find(student => student.name === imported.name);
+  ));
+  if (exactMatch) return exactMatch;
+  if (imported.studentNo) return undefined;
+
+  const nameMatches = existingStudents.filter(student => student.name === imported.name);
+  return nameMatches.length === 1 ? nameMatches[0] : undefined;
 }
 
 function rewriteImportedSessionStudentIds(

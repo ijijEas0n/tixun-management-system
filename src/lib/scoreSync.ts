@@ -17,6 +17,7 @@ export interface ScoreSyncUpdate extends RecordTarget {
   groupId: string;
   groupName: string;
   scores: Partial<ScoreSet>;
+  comments?: Partial<Record<SportEventKey, string>>;
 }
 
 export interface ScoreSyncUndoSnapshot {
@@ -26,6 +27,7 @@ export interface ScoreSyncUndoSnapshot {
   hadRecord: boolean;
   previousValue: number | null;
   previousAttempts?: (number | null)[];
+  previousComment?: string;
 }
 
 interface BuildScoreSyncUpdatesOptions {
@@ -34,6 +36,7 @@ interface BuildScoreSyncUpdatesOptions {
   trialCount: number;
   target: RecordTarget;
   draft: Record<string, string[]>;
+  comments?: Record<string, string>;
 }
 
 interface BuildUndoSnapshotsOptions {
@@ -91,6 +94,7 @@ export function buildScoreSyncUpdates({
   trialCount,
   target,
   draft,
+  comments,
 }: BuildScoreSyncUpdatesOptions): ScoreSyncUpdate[] {
   const attemptKey = getAttemptKey(event);
   const updates: ScoreSyncUpdate[] = [];
@@ -105,18 +109,25 @@ export function buildScoreSyncUpdates({
       const validScores = attempts.filter((value): value is number => (
         typeof value === 'number' && Number.isFinite(value) && value > 0
       ));
-      if (validScores.length === 0) return;
+      const hasCommentDraft = comments ? Object.prototype.hasOwnProperty.call(comments, member.studentId) : false;
+      const comment = hasCommentDraft ? comments?.[member.studentId]?.trim() ?? '' : undefined;
+      if (validScores.length === 0 && !hasCommentDraft) return;
 
-      const best = isLowerBetter(event) ? Math.min(...validScores) : Math.max(...validScores);
+      const best = validScores.length > 0
+        ? isLowerBetter(event) ? Math.min(...validScores) : Math.max(...validScores)
+        : undefined;
       updates.push({
         ...target,
         studentId: member.studentId,
         groupId: group.id,
         groupName: group.name,
-        scores: {
+        scores: best === undefined ? {} : {
           [event]: best,
           [attemptKey]: attempts,
         } as Partial<ScoreSet>,
+        comments: hasCommentDraft ? {
+          [event]: comment,
+        } : undefined,
       });
     });
   });
@@ -143,6 +154,7 @@ export function buildScoreSyncUndoSnapshots({
       hadRecord: Boolean(record),
       previousValue: record?.scores[event] ?? null,
       previousAttempts: Array.isArray(previousAttempts) ? [...previousAttempts] : undefined,
+      previousComment: record?.comments?.[event],
     };
   });
 }
@@ -166,8 +178,14 @@ export function applyScoreSyncUndoSnapshots({
 
     const record = studentRecords[recordIndex];
     const scores = { ...record.scores };
+    const comments = { ...(record.comments || {}) };
     scores[event] = snapshot.hadRecord ? snapshot.previousValue : null;
     (scores as Record<string, unknown>)[attemptKey] = snapshot.previousAttempts ? [...snapshot.previousAttempts] : undefined;
+    if (snapshot.previousComment === undefined) {
+      delete comments[event];
+    } else {
+      comments[event] = snapshot.previousComment;
+    }
 
     if (!snapshot.hadRecord && !hasAnyScore(scores)) {
       studentRecords.splice(recordIndex, 1);
@@ -182,6 +200,7 @@ export function applyScoreSyncUndoSnapshots({
       ...record,
       scores,
       points: calculatePoints(scores, student.gender),
+      comments,
     };
     nextRecords[snapshot.studentId] = studentRecords;
   });

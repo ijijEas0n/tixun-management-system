@@ -14,10 +14,11 @@ function cellText(value: unknown): string {
   return String(value).trim();
 }
 
-function parseGender(value: unknown): StudentGender {
+function parseGender(value: unknown): StudentGender | undefined {
   const text = cellText(value);
   if (text.includes('女') || /^f(emale)?$/i.test(text)) return 'female';
-  return 'male';
+  if (text.includes('男') || /^m(ale)?$/i.test(text)) return 'male';
+  return undefined;
 }
 
 function findHeaderIndexes(row: unknown[]) {
@@ -27,7 +28,7 @@ function findHeaderIndexes(row: unknown[]) {
   return {
     name,
     studentNo: labels.findIndex(label => ['序号', '编号', '学号', '学号/编号'].includes(label)),
-    gender: labels.findIndex(label => ['性别', '男女'].includes(label)),
+    gender: labels.findIndex(label => ['性别', '男女', '男/女', '性别(男/女)'].includes(label) || /^gender$/i.test(label)),
   };
 }
 
@@ -55,7 +56,8 @@ export function parseStudentImportWorkbook(sheets: WorkbookMatrices): StudentImp
 
       const name = header ? cellText(row[header.name]) : cellText(row[0]);
       const studentNo = header && header.studentNo >= 0 ? cellText(row[header.studentNo]) : cellText(row[1]);
-      const gender = header && header.gender >= 0 ? parseGender(row[header.gender]) : 'male';
+      const parsedGender = header && header.gender >= 0 ? parseGender(row[header.gender]) : parseGender(row[2]);
+      const gender = parsedGender || 'male';
       if (header ? !name : !looksLikeNoHeaderStudentRow(row)) return;
 
       const key = `${studentNo || 'no-number'}:${name}`;

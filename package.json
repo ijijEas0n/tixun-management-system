@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "test": "tsx src/lib/scoring.test.ts && tsx src/lib/utils.test.ts && tsx src/lib/studentStats.test.ts && tsx src/lib/grouping.test.ts && tsx src/lib/testRecords.test.ts && tsx src/lib/studentReport.test.ts && tsx src/lib/scoreSync.test.ts && tsx src/lib/prearrangedImport.test.ts && tsx src/lib/studentImport.test.ts && tsx src/lib/performanceAnalysis.test.ts && tsx src/lib/voiceScoreParser.test.ts && tsx src/lib/tencentVoiceSettings.test.ts && tsx src/lib/tencentVoiceError.test.ts",
+    "test": "tsx src/lib/scoring.test.ts && tsx src/lib/utils.test.ts && tsx src/lib/studentStats.test.ts && tsx src/lib/grouping.test.ts && tsx src/lib/testRecords.test.ts && tsx src/lib/studentReport.test.ts && tsx src/lib/scoreSync.test.ts && tsx src/lib/prearrangedImport.test.ts && tsx src/lib/studentImport.test.ts && tsx src/lib/entryDrafts.test.ts && tsx src/lib/storage.test.ts && tsx src/lib/tableWorkbook.test.ts && tsx src/lib/performanceAnalysis.test.ts && tsx src/lib/voiceScoreParser.test.ts && tsx src/lib/tencentVoiceSettings.test.ts && tsx src/lib/tencentVoiceError.test.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -21,11 +21,12 @@
     "pinyin-pro": "^3.28.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "read-excel-file": "^9.0.7",
     "recharts": "^3.8.1",
     "tailwind-merge": "^3.5.0",
     "tencentcloud-speech-sdk-js": "^1.0.0",
     "vite": "^6.2.0",
-    "xlsx": "^0.18.5"
+    "write-excel-file": "^4.0.4"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

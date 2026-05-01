@@ -13,8 +13,8 @@ import {
   StudentVolatilityItem,
   TestTrendPoint,
 } from '../lib/performanceAnalysis';
-import * as XLSX from 'xlsx';
 import ConfirmModal from './ConfirmModal';
+import { writeObjectRowsFile } from '../lib/tableWorkbook';
 
 interface RankingsProps {
   students: Student[];
@@ -27,6 +27,14 @@ interface RankingsProps {
 type RankType = 'total' | 'hundred' | 'shotPut' | 'tripleJump' | 'eightHundred';
 type DashboardMode = 'overall' | 'event';
 type ExpandedPanel = 'dashboard' | 'rankings';
+
+function hasValidScore(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function hasAnyScore(record: TestRecord) {
+  return ANALYSIS_EVENTS.some(event => hasValidScore(record.scores[event.id]));
+}
 
 export default function Rankings({ students, records, testSessions, onUpdateRecord, onDeleteRecord }: RankingsProps) {
   const [activeType, setActiveType] = useState<RankType>('total');
@@ -59,7 +67,9 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
       const studentRecords = records[student.id] || [];
       const recordOnDate = studentRecords.find(r => getRecordTestKey(r) === effectiveKey);
       return { student, record: recordOnDate };
-    }).filter(d => d.record);
+    }).filter(d => (
+      d.record && (activeType === 'total' ? hasAnyScore(d.record) : hasValidScore(d.record.scores[activeType]))
+    ));
 
     return data.sort((a, b) => {
       if (activeType === 'total') {
@@ -94,6 +104,23 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
   }, [students, records, dashboardEvent, testSessions]);
 
   const formatScore = (value: number | null) => value === null ? '--' : value.toFixed(2);
+  const attemptKeys: Record<SportEventKey, keyof ScoreSet> = {
+    hundred: 'hundredAttempts',
+    shotPut: 'shotPutAttempts',
+    tripleJump: 'tripleJumpAttempts',
+    eightHundred: 'eightHundredAttempts',
+  };
+  const formatAttemptValue = (event: SportEventKey, value: number | null | undefined) => {
+    if (value === null || value === undefined) return '--';
+    if (event === 'eightHundred') return formatTime800m(value);
+    if (event === 'hundred') return value.toFixed(2);
+    return value.toFixed(2);
+  };
+  const formatAttempts = (record: TestRecord | undefined, event: SportEventKey) => {
+    const attempts = record?.scores[attemptKeys[event]];
+    if (!Array.isArray(attempts) || attempts.length === 0) return '';
+    return attempts.map(value => formatAttemptValue(event, value)).join(' / ');
+  };
 
   const handleStartEdit = (studentId: string, currentScores: ScoreSet) => {
     setEditingId(studentId);
@@ -122,7 +149,7 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
     setEditValues({});
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
     const exportData = rankedData.map((d, i) => ({
       '排名': i + 1,
       '测试': selectedOption?.label || '测试',
@@ -134,10 +161,11 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
       '800米成绩': d.record?.scores.eightHundred ? formatTime800m(d.record.scores.eightHundred) : '--',
       '总分': d.record?.points.total || 0,
     }));
-    const ws = XLSX.utils.json_to_sheet(exportData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "成绩报表");
-    XLSX.writeFile(wb, `体育测试报表_${(selectedOption?.label || '全部').replace(/[\\/:*?"<>|]/g, '_')}.xlsx`);
+    await writeObjectRowsFile(
+      exportData,
+      '成绩报表',
+      `体育测试报表_${(selectedOption?.label || '全部').replace(/[\\/:*?"<>|]/g, '_')}.xlsx`,
+    );
   };
 
   const tabs = [
@@ -519,6 +547,9 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
                         <>
                           {d.record?.scores.hundred?.toFixed(2) || '-'} 
                           <span className="text-[10px] font-bold text-slate-300 ml-1">({d.record?.points.hundred.toFixed(2)})</span>
+                          {formatAttempts(d.record, 'hundred') && (
+                            <p className="mt-0.5 text-[9px] font-bold text-slate-300 truncate">记录 {formatAttempts(d.record, 'hundred')}</p>
+                          )}
                         </>
                       )}
                     </td>
@@ -537,6 +568,9 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
                         <>
                           {d.record?.scores.shotPut?.toFixed(2) || '-'}
                           <span className="text-[10px] font-bold text-slate-300 ml-1">({d.record?.points.shotPut.toFixed(2)})</span>
+                          {formatAttempts(d.record, 'shotPut') && (
+                            <p className="mt-0.5 text-[9px] font-bold text-slate-300 truncate">记录 {formatAttempts(d.record, 'shotPut')}</p>
+                          )}
                         </>
                       )}
                     </td>
@@ -555,6 +589,9 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
                         <>
                           {d.record?.scores.tripleJump?.toFixed(2) || '-'}
                           <span className="text-[10px] font-bold text-slate-300 ml-1">({d.record?.points.tripleJump.toFixed(2)})</span>
+                          {formatAttempts(d.record, 'tripleJump') && (
+                            <p className="mt-0.5 text-[9px] font-bold text-slate-300 truncate">记录 {formatAttempts(d.record, 'tripleJump')}</p>
+                          )}
                         </>
                       )}
                     </td>
@@ -573,6 +610,9 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
                         <>
                           {d.record?.scores.eightHundred ? formatTime800m(d.record.scores.eightHundred) : '-'}
                           <span className="text-[10px] font-bold text-slate-300 ml-1">({d.record?.points.eightHundred.toFixed(2)})</span>
+                          {formatAttempts(d.record, 'eightHundred') && (
+                            <p className="mt-0.5 text-[9px] font-bold text-slate-300 truncate">记录 {formatAttempts(d.record, 'eightHundred')}</p>
+                          )}
                         </>
                       )}
                     </td>

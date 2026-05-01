@@ -4,6 +4,7 @@
  */
 
 export type StudentGender = 'male' | 'female';
+export type SportEventKey = 'hundred' | 'shotPut' | 'tripleJump' | 'eightHundred';
 
 export interface ScoreSet {
   hundred: number | null; // Best result
@@ -31,6 +32,7 @@ export interface TestRecord {
   testName?: string;
   scores: ScoreSet;
   points: ScorePoints;
+  comments?: Partial<Record<SportEventKey, string>>;
 }
 
 export interface Student {
@@ -45,8 +47,6 @@ export interface AcademicYear {
   id: string;
   name: string; // e.g. "2025"
 }
-
-export type SportEventKey = 'hundred' | 'shotPut' | 'tripleJump' | 'eightHundred';
 
 export type GroupingMode = 'size' | 'count';
 export type TestSessionGroupGender = StudentGender | 'mixed';

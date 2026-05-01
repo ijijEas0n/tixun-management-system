@@ -138,45 +138,50 @@ function normalizeTestSessions(rawSessions: any[] | undefined): TestSession[] {
   });
 }
 
+export function parseStoredAppData(saved: string | null): AppData {
+  let parsed: any;
+  try {
+    parsed = saved ? JSON.parse(saved) : DEFAULT_DATA;
+  } catch {
+    return DEFAULT_DATA;
+  }
+
+  const years = Array.isArray(parsed.years) && parsed.years.length > 0 ? parsed.years : DEFAULT_DATA.years;
+  const students = Array.isArray(parsed.students) ? parsed.students : [];
+  const testSessions = normalizeTestSessions(parsed.testSessions || parsed.phaseTests);
+
+  const migratedStudents = students.map((s: Student) => {
+    if (!s.studentNo) {
+      const year = years.find((y: AcademicYear) => y.id === s.yearId);
+      const yearPrefix = year ? year.name.slice(-2) : '00';
+      return { ...s, studentNo: `${yearPrefix}999` };
+    }
+    return s;
+  });
+
+  const rawRecords = parsed.records && typeof parsed.records === 'object' ? parsed.records : {};
+  const records = Object.fromEntries(
+    Object.entries(rawRecords).map(([studentId, studentRecords]) => {
+      const student = migratedStudents.find((s: Student) => s.id === studentId);
+      if (!student || !Array.isArray(studentRecords)) return [studentId, Array.isArray(studentRecords) ? studentRecords : []];
+
+      return [
+        studentId,
+        (studentRecords as TestRecord[]).map(record => ({
+          ...record,
+          points: calculatePoints(record.scores, student.gender),
+        })),
+      ];
+    }),
+  );
+
+  return { ...DEFAULT_DATA, ...parsed, years, students: migratedStudents, records, testSessions };
+}
+
 export function useData() {
   const [data, setData] = useState<AppData>(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
-    const parsed = saved ? JSON.parse(saved) : DEFAULT_DATA;
-    const testSessions = normalizeTestSessions(parsed.testSessions || parsed.phaseTests);
-    
-    // Data Migration: Ensure all students have a studentNo
-    let modified = false;
-    const migratedStudents = parsed.students.map((s: Student) => {
-      if (!s.studentNo) {
-        modified = true;
-        const year = parsed.years.find((y: AcademicYear) => y.id === s.yearId);
-        const yearPrefix = year ? year.name.slice(-2) : '00';
-        // Simple assignment for legacy data
-        const fallbackNo = `${yearPrefix}999`; 
-        return { ...s, studentNo: fallbackNo };
-      }
-      return s;
-    });
-
-    const records = Object.fromEntries(
-      Object.entries(parsed.records || {}).map(([studentId, studentRecords]) => {
-        const student = migratedStudents.find((s: Student) => s.id === studentId);
-        if (!student) return [studentId, studentRecords];
-
-        return [
-          studentId,
-          (studentRecords as TestRecord[]).map(record => ({
-            ...record,
-            points: calculatePoints(record.scores, student.gender),
-          })),
-        ];
-      })
-    );
-
-    if (modified) {
-      return { ...parsed, students: migratedStudents, records, testSessions };
-    }
-    return { ...parsed, records, testSessions };
+    return parseStoredAppData(saved);
   });
 
   const [currentYearId, setCurrentYearId] = useState<string>(() => {
@@ -358,11 +363,17 @@ export function useData() {
     });
   };
 
-  const updateRecordsBatch = (updates: Array<{ studentId: string; scores: Partial<ScoreSet> } & RecordTarget>) => {
+  const updateRecordsBatch = (
+    updates: Array<{
+      studentId: string;
+      scores: Partial<ScoreSet>;
+      comments?: Partial<Record<SportEventKey, string>>;
+    } & RecordTarget>,
+  ) => {
     setData(prev => {
       const newRecords = { ...prev.records };
       
-      updates.forEach(({ studentId, date, testSessionId, testName, scores }) => {
+      updates.forEach(({ studentId, date, testSessionId, testName, scores, comments }) => {
         const student = prev.students.find(s => s.id === studentId);
         if (!student) return;
 
@@ -391,6 +402,7 @@ export function useData() {
             testName: testName || existing.testName,
             scores: mergedScores,
             points,
+            comments: comments !== undefined ? { ...(existing.comments || {}), ...comments } : existing.comments,
           };
         } else {
           // If scores is partial, we need to fill it with nulls for a new record
@@ -413,6 +425,7 @@ export function useData() {
             testName,
             scores: fullScores,
             points,
+            comments,
           });
         }
         newRecords[studentId] = studentRecords;

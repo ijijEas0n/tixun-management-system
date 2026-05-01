@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Activity,
+  ArrowRightLeft,
   ChevronDown,
   CheckCircle,
   Clock,
@@ -9,7 +9,6 @@ import {
   FileUp,
   Filter,
   Flag,
-  GripVertical,
   LayoutGrid,
   List,
   LockKeyhole,
@@ -32,7 +31,6 @@ import {
   Ruler,
 } from 'lucide-react';
 import type WebAudioSpeechRecognizer from 'tencentcloud-speech-sdk-js/app/webaudiospeechrecognizer.js';
-import * as XLSX from 'xlsx';
 import {
   GroupingMode,
   ScoreSet,
@@ -49,6 +47,7 @@ import {
   getDefaultGroupSize,
   getDefaultTrialCount,
   getDisplayGroupStartTime,
+  getEntryViewVersionId,
   getEntryVersionId,
   getEventLabel,
   getLatestGroupingVersion,
@@ -59,7 +58,6 @@ import {
   nextTrialCount,
   previousTrialCount,
   removeGroupById,
-  reorderGroupMembers,
   swapGroupMembers,
 } from '../lib/grouping';
 import { RecordTarget } from '../lib/testRecords';
@@ -68,7 +66,17 @@ import {
   buildScoreSyncUpdates,
   ScoreSyncUndoSnapshot,
 } from '../lib/scoreSync';
-import { buildGroupPerformanceAnalysis } from '../lib/performanceAnalysis';
+import {
+  ENTRY_DRAFTS_STORAGE_KEY,
+  ENTRY_DRAFT_COMMENTS_STORAGE_KEY,
+  EntryDraftComments,
+  EntryDraftInputs,
+  getEntryDraftKey,
+  removeEntryDraftCommentsForSessions,
+  removeEntryDraftsForSessions,
+  safeParseEntryDraftComments,
+  safeParseEntryDrafts,
+} from '../lib/entryDrafts';
 import { parseVoiceScoreText, VoiceNoteAssignment } from '../lib/voiceScoreParser';
 import { formatTencentVoiceError, isTencentVoiceCloseCode } from '../lib/tencentVoiceError';
 import {
@@ -83,6 +91,11 @@ import {
   PrearrangedImportResult,
   PrearrangedStudentImportMode,
 } from '../lib/prearrangedImport';
+import {
+  readFirstSheetObjects,
+  readWorkbookMatrices,
+  writeObjectRowsFile,
+} from '../lib/tableWorkbook';
 import { cn } from '../lib/utils';
 import ConfirmModal from './ConfirmModal';
 
@@ -103,7 +116,13 @@ interface TestWorkspaceProps {
     updates: Partial<TestSessionGroupingVersion>,
   ) => void;
   onUpdateStudent: (id: string, updates: Partial<Student>) => void;
-  onSaveBatch: (updates: Array<{ studentId: string; scores: Partial<ScoreSet> } & RecordTarget>) => void;
+  onSaveBatch: (
+    updates: Array<{
+      studentId: string;
+      scores: Partial<ScoreSet>;
+      comments?: Partial<Record<SportEventKey, string>>;
+    } & RecordTarget>,
+  ) => void;
   onRevertScoreSync: (
     target: RecordTarget,
     event: SportEventKey,
@@ -125,8 +144,6 @@ const EVENT_CONFIG = [
 
 const today = () => new Date().toISOString().split('T')[0];
 
-type DraftInputs = Record<string, Record<string, string[]>>;
-
 interface ScoreSyncHistoryItem {
   id: string;
   sessionId: string;
@@ -142,6 +159,7 @@ type VoiceMessageTone = 'info' | 'success' | 'error';
 type VoiceStopReason = 'manual' | 'timeout' | 'cleanup';
 
 const SCORE_SYNC_HISTORY_KEY = 'testing_group_score_sync_history';
+const ENTRY_VERSION_SELECTIONS_KEY = 'testing_group_entry_version_selections';
 const VOICE_MAX_RECOGNITION_MS = 55_000;
 
 interface TencentCryptoWordArray {
@@ -203,10 +221,6 @@ function formatTencentSdkError(error: unknown) {
   return formatTencentVoiceError(error);
 }
 
-function getDraftKey(sessionId: string, event: SportEventKey, versionId: string) {
-  return `${sessionId}:${event}:${versionId}`;
-}
-
 function getStudentLabel(student?: Student) {
   if (!student) return '未知学生';
   return `${student.name} #${student.studentNo}`;
@@ -240,6 +254,26 @@ function getImportEventSummaryText(importResult: PrearrangedImportResult) {
   return eventText || '未识别项目';
 }
 
+function safeParseStringRecord(saved: string | null): Record<string, string> {
+  if (!saved) return {};
+  try {
+    const parsed = JSON.parse(saved);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+
+function safeParseSyncHistory(saved: string | null): ScoreSyncHistoryItem[] {
+  if (!saved) return [];
+  try {
+    const parsed = JSON.parse(saved);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 export default function TestWorkspace({
   view,
   students,
@@ -271,14 +305,14 @@ export default function TestWorkspace({
   });
   const [confirmGenerate, setConfirmGenerate] = useState(false);
   const [confirmUnlockGrouping, setConfirmUnlockGrouping] = useState(false);
-  const [draggingMember, setDraggingMember] = useState<{ groupId: string; studentId: string } | null>(null);
-  const [dragOverStudentId, setDragOverStudentId] = useState<string | null>(null);
   const [editingStudentId, setEditingStudentId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [savedToastText, setSavedToastText] = useState('');
   const [isUndoSyncOpen, setIsUndoSyncOpen] = useState(false);
   const [undoStudentIds, setUndoStudentIds] = useState<string[]>([]);
-  const [entryVersionSelections, setEntryVersionSelections] = useState<Record<string, string>>({});
+  const [entryVersionSelections, setEntryVersionSelections] = useState<Record<string, string>>(() => (
+    safeParseStringRecord(localStorage.getItem(ENTRY_VERSION_SELECTIONS_KEY))
+  ));
   const [groupingDisplayMode, setGroupingDisplayMode] = useState<'detail' | 'tile'>('detail');
   const [tileScale, setTileScale] = useState(80);
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(false);
@@ -300,22 +334,31 @@ export default function TestWorkspace({
   const voiceStopReasonRef = useRef<VoiceStopReason | null>(null);
   const voiceStartTokenRef = useRef(0);
   const [syncHistory, setSyncHistory] = useState<ScoreSyncHistoryItem[]>(() => {
-    const saved = localStorage.getItem(SCORE_SYNC_HISTORY_KEY);
-    return saved ? JSON.parse(saved) : [];
+    return safeParseSyncHistory(localStorage.getItem(SCORE_SYNC_HISTORY_KEY));
   });
 
-  const [draftInputs, setDraftInputs] = useState<DraftInputs>(() => {
-    const saved = localStorage.getItem('testing_group_entry_drafts');
-    return saved ? JSON.parse(saved) : {};
+  const [draftInputs, setDraftInputs] = useState<EntryDraftInputs>(() => {
+    return safeParseEntryDrafts(localStorage.getItem(ENTRY_DRAFTS_STORAGE_KEY));
+  });
+  const [draftComments, setDraftComments] = useState<EntryDraftComments>(() => {
+    return safeParseEntryDraftComments(localStorage.getItem(ENTRY_DRAFT_COMMENTS_STORAGE_KEY));
   });
 
   useEffect(() => {
-    localStorage.setItem('testing_group_entry_drafts', JSON.stringify(draftInputs));
+    localStorage.setItem(ENTRY_DRAFTS_STORAGE_KEY, JSON.stringify(draftInputs));
   }, [draftInputs]);
+
+  useEffect(() => {
+    localStorage.setItem(ENTRY_DRAFT_COMMENTS_STORAGE_KEY, JSON.stringify(draftComments));
+  }, [draftComments]);
 
   useEffect(() => {
     localStorage.setItem(SCORE_SYNC_HISTORY_KEY, JSON.stringify(syncHistory));
   }, [syncHistory]);
+
+  useEffect(() => {
+    localStorage.setItem(ENTRY_VERSION_SELECTIONS_KEY, JSON.stringify(entryVersionSelections));
+  }, [entryVersionSelections]);
 
   const showVoiceMessage = (message: string, tone: VoiceMessageTone = 'info') => {
     setVoiceMessage(message);
@@ -393,8 +436,6 @@ export default function TestWorkspace({
   useEffect(() => {
     setGroupSize(getDefaultGroupSize(activeEvent));
     setSelectedGroupId(null);
-    setDraggingMember(null);
-    setDragOverStudentId(null);
     setSwapSelection(null);
   }, [activeEvent]);
 
@@ -409,7 +450,9 @@ export default function TestWorkspace({
     ? entryVersionId
     : activeSession?.activeVersionIds[activeEvent] || getLatestGroupingVersion(versions)?.id;
   const selectedEntryVersionId = entrySelectionKey ? entryVersionSelections[entrySelectionKey] : undefined;
-  const activeVersionId = isEntryView ? (entryVersionId || selectedEntryVersionId || viewVersionId) : viewVersionId;
+  const activeVersionId = isEntryView
+    ? getEntryViewVersionId({ entryVersionId, selectedEntryVersionId, viewVersionId })
+    : viewVersionId;
   const activeVersion = versions.find(version => version.id === activeVersionId) || getLatestGroupingVersion(versions);
   const isActiveVersionEntryVersion = Boolean(
     activeVersion && activeSession?.entryVersionIds?.[activeEvent] === activeVersion.id,
@@ -418,7 +461,7 @@ export default function TestWorkspace({
   const canSaveEntryScores = isEntryView && Boolean(activeVersion && activeVersion.id === entryVersionId);
   const selectedGroup = activeVersion?.groups.find(group => group.id === selectedGroupId) || activeVersion?.groups[0] || null;
   const eventConfig = EVENT_CONFIG.find(event => event.id === activeEvent)!;
-  const draftKey = activeSession && activeVersion ? getDraftKey(activeSession.id, activeEvent, activeVersion.id) : '';
+  const draftKey = activeSession && activeVersion ? getEntryDraftKey(activeSession.id, activeEvent, activeVersion.id) : '';
   const trialCount = activeSession?.trialConfigs[activeEvent] || getDefaultTrialCount(activeEvent);
   const groupScheduleConfig = activeSession?.groupScheduleConfigs?.[activeEvent] || { startTime: '', intervalMinutes: 0 };
   const scheduleIntervalHours = Math.floor((groupScheduleConfig.intervalMinutes || 0) / 60);
@@ -469,17 +512,6 @@ export default function TestWorkspace({
   const selectedGroupStartTime = selectedGroupIndex >= 0 && selectedGroup
     ? getDisplayGroupStartTime(selectedGroup, groupScheduleConfig, selectedGroupIndex)
     : '';
-  const selectedGroupAnalysis = useMemo(() => {
-    if (!selectedGroup || !activeRecordTarget) return null;
-    return buildGroupPerformanceAnalysis({
-      group: selectedGroup,
-      students,
-      records,
-      target: activeRecordTarget,
-      event: activeEvent,
-    });
-  }, [selectedGroup, activeRecordTarget, students, records, activeEvent]);
-
   useEffect(() => {
     if (!activeVersion || activeVersion.groups.length === 0) {
       setSelectedGroupId(null);
@@ -673,54 +705,6 @@ export default function TestWorkspace({
     setSwapSelection(null);
   };
 
-  const handleMemberDragStart = (
-    event: React.DragEvent<HTMLDivElement>,
-    groupId: string,
-    studentId: string,
-  ) => {
-    if (!isGroupingView || groupingLocked) return;
-    event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('text/plain', studentId);
-    setDraggingMember({ groupId, studentId });
-  };
-
-  const handleMemberDragOver = (
-    event: React.DragEvent<HTMLDivElement>,
-    groupId: string,
-    studentId: string,
-  ) => {
-    if (!isGroupingView || groupingLocked || !draggingMember || draggingMember.groupId !== groupId) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    if (draggingMember.studentId !== studentId) {
-      setDragOverStudentId(studentId);
-    }
-  };
-
-  const handleMemberDrop = (
-    event: React.DragEvent<HTMLDivElement>,
-    groupId: string,
-    targetStudentId: string,
-  ) => {
-    event.preventDefault();
-    if (groupingLocked || !activeVersion || !draggingMember || draggingMember.groupId !== groupId) {
-      setDraggingMember(null);
-      setDragOverStudentId(null);
-      return;
-    }
-
-    const group = activeVersion.groups.find(item => item.id === groupId);
-    if (!group) return;
-
-    const fromIndex = group.members.findIndex(member => member.studentId === draggingMember.studentId);
-    const toIndex = group.members.findIndex(member => member.studentId === targetStudentId);
-    updateGroups(activeVersion.groups.map(item => (
-      item.id === groupId ? reorderGroupMembers(item, fromIndex, toIndex, activeEvent) : item
-    )));
-    setDraggingMember(null);
-    setDragOverStudentId(null);
-  };
-
   const handleStudentNameCommit = (studentId: string) => {
     const trimmed = editingName.trim();
     if (trimmed) {
@@ -747,21 +731,28 @@ export default function TestWorkspace({
     });
   };
 
-  const updateMemberNotes = (notes: VoiceNoteAssignment[]) => {
-    if (!activeSession || !activeVersion || !selectedGroup || notes.length === 0) return;
-    const notesByStudent = new Map(notes.map(note => [note.studentId, note.note]));
-    onUpdateGroupingVersion(activeSession.id, activeEvent, activeVersion.id, {
-      groups: activeVersion.groups.map(group => (
-        group.id === selectedGroup.id
-          ? {
-              ...group,
-              members: group.members.map(member => {
-                const note = notesByStudent.get(member.studentId);
-                return note === undefined ? member : { ...member, note };
-              }),
-            }
-          : group
-      )),
+  const handleDraftCommentChange = (studentId: string, value: string) => {
+    if (!draftKey) return;
+    setDraftComments(prev => {
+      const versionComments = prev[draftKey] || {};
+      return {
+        ...prev,
+        [draftKey]: {
+          ...versionComments,
+          [studentId]: value,
+        },
+      };
+    });
+  };
+
+  const updateDraftCommentsFromVoice = (notes: VoiceNoteAssignment[]) => {
+    if (!draftKey || notes.length === 0) return;
+    setDraftComments(prev => {
+      const versionComments = { ...(prev[draftKey] || {}) };
+      notes.forEach(note => {
+        versionComments[note.studentId] = note.note;
+      });
+      return { ...prev, [draftKey]: versionComments };
     });
   };
 
@@ -791,13 +782,13 @@ export default function TestWorkspace({
     }
 
     if (parsed.notes.length > 0) {
-      updateMemberNotes(parsed.notes);
+      updateDraftCommentsFromVoice(parsed.notes);
     }
 
     const hasAppliedItems = parsed.assignments.length > 0 || parsed.notes.length > 0;
     const parts = [
       parsed.assignments.length > 0 ? `已填入 ${parsed.assignments.length} 条成绩` : '',
-      parsed.notes.length > 0 ? `已添加 ${parsed.notes.length} 条备注` : '',
+      parsed.notes.length > 0 ? `已添加 ${parsed.notes.length} 条批注` : '',
       parsed.unmatchedSegments.length > 0 ? `${parsed.unmatchedSegments.length} 句未识别` : '',
     ].filter(Boolean);
     showVoiceMessage(parts.join('，') || '没有识别到成绩', hasAppliedItems ? 'success' : 'error');
@@ -920,6 +911,15 @@ export default function TestWorkspace({
     startVoiceListening();
   };
 
+  const startStudentCommentVoice = (student: Student | undefined) => {
+    if (!student) return;
+    setVoiceText(`${student.name}备注 `);
+    showVoiceMessage(`已定位到 ${student.name} 的批注，可直接说内容或手动输入`, 'info');
+    if (!isListening && !isProcessingVoice) {
+      void startVoiceListening();
+    }
+  };
+
   const handleAddTrial = () => {
     if (!activeSession || trialCount >= 10) return;
     onUpdateTestSession(activeSession.id, {
@@ -948,12 +948,14 @@ export default function TestWorkspace({
   const handleSaveScoresForGroups = (groupsToSync: TestSessionGroup[], scopeLabel: string) => {
     if (!activeSession || !activeVersion || !activeRecordTarget || !draftKey || !canSaveEntryScores) return;
     const versionDraft = draftInputs[draftKey] || {};
+    const versionComments = draftComments[draftKey] || {};
     const updates = buildScoreSyncUpdates({
       groups: groupsToSync,
       event: activeEvent,
       trialCount,
       target: activeRecordTarget,
       draft: versionDraft,
+      comments: versionComments,
     });
 
     if (updates.length === 0) return;
@@ -1019,7 +1021,7 @@ export default function TestWorkspace({
     showSyncToast(`已撤销 ${selectedSnapshots.length} 人同步`);
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
     if (!activeSession || !activeVersion) return;
     const rows = activeVersion.groups.flatMap((group, groupIndex) => group.members.map(member => {
       const student = studentsById.get(member.studentId);
@@ -1040,23 +1042,20 @@ export default function TestWorkspace({
         '性别': student?.gender === 'female' ? '女' : '男',
       };
     }));
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, '分组名单');
-    XLSX.writeFile(workbook, `${activeSession.name}_${getEventLabel(activeEvent)}_${activeVersion.name}_分组名单.xlsx`);
+    await writeObjectRowsFile(
+      rows,
+      '分组名单',
+      `${activeSession.name}_${getEventLabel(activeEvent)}_${activeVersion.name}_分组名单.xlsx`,
+    );
   };
 
-  const handleImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
     if (!activeSession || groupingLocked) return;
     const file = event.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = loadEvent => {
-      const data = new Uint8Array(loadEvent.target?.result as ArrayBuffer);
-      const workbook = XLSX.read(data, { type: 'array' });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet) as any[];
+    try {
+      const rows = await readFirstSheetObjects(file);
       const grouped = new Map<string, TestSessionGroup>();
 
       rows.forEach((row, index) => {
@@ -1076,7 +1075,7 @@ export default function TestWorkspace({
           gender: activeEvent === 'eightHundred' ? 'mixed' : student.gender,
           members: [],
         };
-        const lane = parseInt(row['跑道'], 10);
+        const lane = parseInt(String(row['跑道'] || ''), 10);
         group.members.push({
           studentId: student.id,
           lane: activeEvent === 'hundred' ? (Number.isFinite(lane) ? lane : group.members.length + 1) : undefined,
@@ -1096,48 +1095,50 @@ export default function TestWorkspace({
       };
       onAddGroupingVersion(activeSession.id, activeEvent, importedVersion);
       setSelectedGroupId(importedVersion.groups[0]?.id || null);
-    };
-    reader.readAsArrayBuffer(file);
+    } catch {
+      showSyncToast('分组表读取失败，请检查文件格式');
+    }
     event.target.value = '';
   };
 
-  const handlePrearrangedImportFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePrearrangedImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = loadEvent => {
-      try {
-        const data = new Uint8Array(loadEvent.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
-        const sheets = Object.fromEntries(workbook.SheetNames.map(sheetName => [
-          sheetName,
-          XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, defval: '' }) as unknown[][],
-        ]));
-        const importResult = parsePrearrangedWorkbook(sheets, {
-          fileName: file.name,
-          yearId: currentYearId,
-        });
-        const importedEventCount = Object.keys(importResult.summary.eventSummaries).length;
-        if (importResult.students.length === 0 || importedEventCount === 0) {
-          showSyncToast('没有识别到可导入的预排表');
-          return;
-        }
-        setPrearrangedStudentMode('appendMissing');
-        setPendingPrearrangedImport(importResult);
-      } catch {
-        showSyncToast('预排表解析失败，请检查表头');
+    try {
+      const sheets = await readWorkbookMatrices(file);
+      const importResult = parsePrearrangedWorkbook(sheets, {
+        fileName: file.name,
+        yearId: currentYearId,
+      });
+      const importedEventCount = Object.keys(importResult.summary.eventSummaries).length;
+      if (importResult.students.length === 0 || importedEventCount === 0) {
+        showSyncToast('没有识别到可导入的预排表');
+        return;
       }
-    };
-    reader.readAsArrayBuffer(file);
+      setPrearrangedStudentMode('appendMissing');
+      setPendingPrearrangedImport(importResult);
+    } catch {
+      showSyncToast('预排表解析失败，请检查表头');
+    }
     event.target.value = '';
   };
 
   const handleConfirmPrearrangedImport = () => {
     if (!pendingPrearrangedImport) return;
+    const removedSessionIds = prearrangedStudentMode === 'replaceYear'
+      ? testSessions.map(session => session.id)
+      : [];
     onApplyPrearrangedImport(currentYearId, pendingPrearrangedImport, prearrangedStudentMode);
-    setDraftInputs({});
-    setSyncHistory([]);
+    setDraftInputs(prev => removeEntryDraftsForSessions(prev, removedSessionIds));
+    setDraftComments(prev => removeEntryDraftCommentsForSessions(prev, removedSessionIds));
+    if (removedSessionIds.length > 0) {
+      const removed = new Set(removedSessionIds);
+      setSyncHistory(prev => prev.filter(item => !removed.has(item.sessionId)));
+      setEntryVersionSelections(prev => Object.fromEntries(
+        Object.entries(prev).filter(([key]) => !removed.has(key.split(':')[0])),
+      ));
+    }
     setActiveSessionId(pendingPrearrangedImport.testSession.id);
     const firstEvent = EVENT_CONFIG.find(event => pendingPrearrangedImport.testSession.groupingVersions[event.id][0])?.id;
     if (firstEvent) setActiveEvent(firstEvent);
@@ -1150,43 +1151,37 @@ export default function TestWorkspace({
   const renderMemberRow = (group: TestSessionGroup, member: TestSessionGroup['members'][number], memberIndex: number) => {
     const student = studentsById.get(member.studentId);
     const currentTrials = (draftInputs[draftKey] || {})[member.studentId] || [];
-    const isDragging = draggingMember?.studentId === member.studentId;
-    const isDragTarget = dragOverStudentId === member.studentId && draggingMember?.studentId !== member.studentId;
+    const currentComment = (draftComments[draftKey] || {})[member.studentId] || '';
     const isSwapSelected = swapSelection?.groupId === group.id && swapSelection.studentId === member.studentId;
+    const isSwapCandidate = Boolean(swapSelection) && !isSwapSelected && canModifyGrouping;
 
     return (
       <div
         key={`${group.id}-${member.studentId}`}
-        draggable={canModifyGrouping}
-        onDragStart={event => handleMemberDragStart(event, group.id, member.studentId)}
-        onDragOver={event => handleMemberDragOver(event, group.id, member.studentId)}
-        onDragLeave={() => setDragOverStudentId(null)}
-        onDrop={event => handleMemberDrop(event, group.id, member.studentId)}
-        onDragEnd={() => {
-          setDraggingMember(null);
-          setDragOverStudentId(null);
+        onClick={() => {
+          if (isGroupingView) handleMemberSwapClick(group.id, member.studentId);
         }}
         className={cn(
-          'flex items-center gap-3 rounded-2xl border p-3 transition-all',
-          isDragging ? 'bg-blue-600 border-blue-600 text-white shadow-md opacity-80' : 'bg-white border-slate-100 hover:border-blue-100 hover:shadow-sm',
-          canModifyGrouping && 'cursor-grab active:cursor-grabbing',
+          'flex items-center gap-3 rounded-2xl border p-3 transition-all duration-300',
+          'bg-white border-slate-100 hover:border-blue-100 hover:shadow-sm',
+          canModifyGrouping && 'cursor-pointer hover:-translate-y-0.5 active:scale-[0.99]',
           isGroupingView && groupingLocked && 'bg-white',
-          isDragTarget && 'bg-blue-50 border-blue-300',
           isSwapSelected && 'ring-4 ring-amber-100 border-amber-300 bg-amber-50',
+          isSwapCandidate && 'hover:border-amber-200 hover:bg-amber-50/50',
         )}
       >
         <div className="w-14 shrink-0 flex justify-center">
           {activeEvent === 'hundred' ? (
             <span className={cn(
               'w-11 h-11 rounded-xl flex items-center justify-center text-sm font-black',
-              isDragging ? 'bg-white/20 text-white' : 'bg-orange-50 text-orange-600 border border-orange-100',
+              'bg-orange-50 text-orange-600 border border-orange-100',
             )}>
               {getMemberPositionLabel(activeEvent, member, memberIndex)}
             </span>
           ) : (
             <span className={cn(
               'w-11 h-11 rounded-xl flex items-center justify-center text-sm font-black',
-              isDragging ? 'bg-white/20 text-white' : 'bg-slate-50 text-slate-400',
+              'bg-slate-50 text-slate-400',
             )}>
               {getMemberPositionLabel(activeEvent, member, memberIndex)}
             </span>
@@ -1198,12 +1193,12 @@ export default function TestWorkspace({
             <div
               className={cn(
                 'p-3 rounded-2xl border transition-all',
-                isDragging ? 'border-white/30 bg-white/10 text-white' : 'border-slate-200 bg-white text-slate-400',
+                isSwapSelected ? 'border-amber-200 bg-amber-100 text-amber-700' : 'border-slate-200 bg-white text-slate-400',
                 groupingLocked && 'opacity-40',
               )}
-              title={groupingLocked ? '分组已锁定' : '拖动排序'}
+              title={groupingLocked ? '分组已锁定' : '点击两名学生交换位置'}
             >
-              {groupingLocked ? <LockKeyhole className="w-4 h-4" /> : <GripVertical className="w-4 h-4" />}
+              {groupingLocked ? <LockKeyhole className="w-4 h-4" /> : <ArrowRightLeft className="w-4 h-4" />}
             </div>
           )}
           <div className="min-w-0 flex-1">
@@ -1233,7 +1228,7 @@ export default function TestWorkspace({
                   }}
                   className={cn(
                     'block min-w-0 text-left text-base font-black truncate',
-                    isDragging ? 'text-white' : isSwapSelected ? 'text-amber-700' : 'text-slate-800 hover:text-blue-600',
+                    isSwapSelected ? 'text-amber-700' : 'text-slate-800 hover:text-blue-600',
                     groupingLocked && 'text-slate-900 hover:text-slate-900 cursor-default',
                   )}
                   title={groupingLocked ? '解锁后才能交换位置' : swapSelection ? '点击另一名学生交换位置' : '点击后再点另一名学生交换位置'}
@@ -1257,12 +1252,12 @@ export default function TestWorkspace({
                 {getStudentLabel(student)}
               </div>
             )}
-            <p className={cn('text-xs font-bold mt-0.5 flex items-center gap-2 flex-wrap', isDragging ? 'text-white/60' : groupingLocked ? 'text-slate-700' : 'text-slate-400')}>
+            <p className={cn('text-xs font-bold mt-0.5 flex items-center gap-2 flex-wrap', groupingLocked ? 'text-slate-700' : 'text-slate-400')}>
               <span>{student?.gender === 'female' ? '女生' : '男生'}</span>
               {member.rank !== undefined && <span>排名 {member.rank}</span>}
             </p>
             {member.note && (
-              <p className={cn('mt-1 text-[11px] font-bold truncate', isDragging ? 'text-white/70' : 'text-amber-600')}>
+              <p className="mt-1 text-[11px] font-bold truncate text-amber-600">
                 备注：{member.note}
               </p>
             )}
@@ -1285,6 +1280,30 @@ export default function TestWorkspace({
                 />
               </div>
             ))}
+            <div className="min-w-[220px] flex-1 max-w-md">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="text-[10px] font-black text-slate-300">技术批注</span>
+                <button
+                  type="button"
+                  onClick={event => {
+                    event.stopPropagation();
+                    startStudentCommentVoice(student);
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg border border-blue-100 bg-blue-50 px-2 py-0.5 text-[10px] font-black text-blue-600 hover:bg-blue-100"
+                  title="把语音批注定位到这个学生"
+                >
+                  <Mic className="h-3 w-3" />
+                  语音
+                </button>
+              </div>
+              <input
+                value={currentComment}
+                onChange={event => handleDraftCommentChange(member.studentId, event.target.value)}
+                onClick={event => event.stopPropagation()}
+                placeholder="例：起跑慢、摆臂紧、第二跳节奏好"
+                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-500 placeholder:text-slate-300"
+              />
+            </div>
           </div>
         )}
       </div>
@@ -1293,33 +1312,24 @@ export default function TestWorkspace({
 
   const renderTileMemberRow = (group: TestSessionGroup, member: TestSessionGroup['members'][number], memberIndex: number) => {
     const student = studentsById.get(member.studentId);
-    const isDragging = draggingMember?.studentId === member.studentId;
-    const isDragTarget = dragOverStudentId === member.studentId && draggingMember?.studentId !== member.studentId;
     const isSwapSelected = swapSelection?.groupId === group.id && swapSelection.studentId === member.studentId;
+    const isSwapCandidate = Boolean(swapSelection) && !isSwapSelected && canModifyGrouping;
 
     return (
       <div
         key={`${group.id}-${member.studentId}`}
-        draggable={canModifyGrouping}
-        onDragStart={event => handleMemberDragStart(event, group.id, member.studentId)}
-        onDragOver={event => handleMemberDragOver(event, group.id, member.studentId)}
-        onDragLeave={() => setDragOverStudentId(null)}
-        onDrop={event => handleMemberDrop(event, group.id, member.studentId)}
-        onDragEnd={() => {
-          setDraggingMember(null);
-          setDragOverStudentId(null);
-        }}
+        onClick={() => handleMemberSwapClick(group.id, member.studentId)}
         style={{
           gap: tileConfig.rowGap,
           padding: `${tileConfig.rowPaddingY}px ${tileConfig.rowPaddingX}px`,
         }}
         className={cn(
           'flex items-center rounded-2xl border transition-all duration-300',
-          isDragging ? 'bg-blue-600 border-blue-600 text-white opacity-80' : 'bg-white border-slate-100',
-          canModifyGrouping && 'cursor-grab active:cursor-grabbing',
+          'bg-white border-slate-100',
+          canModifyGrouping && 'cursor-pointer hover:-translate-y-0.5 active:scale-[0.99]',
           isGroupingView && groupingLocked && 'bg-white',
-          isDragTarget && 'bg-blue-50 border-blue-300',
           isSwapSelected && 'ring-4 ring-amber-100 border-amber-300 bg-amber-50',
+          isSwapCandidate && 'hover:border-amber-200 hover:bg-amber-50/50',
         )}
       >
         <span className={cn(
@@ -1339,8 +1349,8 @@ export default function TestWorkspace({
             style={{ width: tileConfig.iconSize, height: tileConfig.iconSize }}
           />
         ) : (
-          <GripVertical
-            className="text-slate-300 shrink-0"
+          <ArrowRightLeft
+            className={cn('shrink-0', isSwapSelected ? 'text-amber-600' : 'text-slate-300')}
             style={{ width: tileConfig.iconSize, height: tileConfig.iconSize }}
           />
         )}
@@ -1404,87 +1414,6 @@ export default function TestWorkspace({
               备注：{member.note}
             </p>
           )}
-        </div>
-      </div>
-    );
-  };
-
-  const renderGroupAnalysisPanel = () => {
-    if (!selectedGroupAnalysis) return null;
-    const maxEventPoint = Math.max(1, ...selectedGroupAnalysis.eventStats.map(stat => stat.averagePoint));
-    return (
-      <div className="mb-3 rounded-2xl border border-slate-100 bg-slate-50/70 p-3">
-        <div className="flex items-center justify-between gap-3 mb-3">
-          <div>
-            <h3 className="text-xs font-black text-slate-800 flex items-center gap-1.5">
-              <Activity className="w-3.5 h-3.5 text-blue-600" /> 组别成绩分析
-            </h3>
-            <p className="text-[10px] font-bold text-slate-400 mt-0.5">
-              已有 {selectedGroupAnalysis.summary.recordedCount}/{selectedGroupAnalysis.summary.memberCount} 人成绩
-            </p>
-          </div>
-          {selectedGroupAnalysis.summary.recordedCount > 0 && selectedGroupAnalysis.weakestEvent && (
-            <span className="text-[10px] font-black px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-100">
-              弱项 {selectedGroupAnalysis.weakestEvent.label}
-            </span>
-          )}
-        </div>
-
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-2">
-          {[
-            { label: '组均分', value: selectedGroupAnalysis.summary.averageTotal?.toFixed(2) || '--' },
-            { label: '最高分', value: selectedGroupAnalysis.summary.maxTotal?.toFixed(2) || '--' },
-            { label: '最低分', value: selectedGroupAnalysis.summary.minTotal?.toFixed(2) || '--' },
-            { label: '本项均分', value: selectedGroupAnalysis.summary.averageEventPoint?.toFixed(2) || '--' },
-            { label: '本项最佳', value: selectedGroupAnalysis.eventBest ? `${selectedGroupAnalysis.eventBest.student.name}` : '--' },
-          ].map(item => (
-            <div key={item.label} className="rounded-xl bg-white border border-slate-100 px-3 py-2">
-              <p className="text-[10px] font-black text-slate-400">{item.label}</p>
-              <p className="mt-1 text-sm font-black text-slate-800 truncate">{item.value}</p>
-            </div>
-          ))}
-        </div>
-
-        <div className="mt-3 grid grid-cols-1 lg:grid-cols-[1.2fr_1fr_1fr] gap-2">
-          <div className="rounded-xl bg-white border border-slate-100 p-3">
-            <p className="text-[10px] font-black text-slate-400 mb-2">项目均分</p>
-            <div className="grid grid-cols-4 gap-2">
-              {selectedGroupAnalysis.eventStats.map(stat => (
-                <div key={stat.event}>
-                  <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-                    <div
-                      className={cn('h-full rounded-full', selectedGroupAnalysis.weakestEvent?.event === stat.event ? 'bg-amber-500' : 'bg-blue-500')}
-                      style={{ width: `${(stat.averagePoint / maxEventPoint) * 100}%` }}
-                    />
-                  </div>
-                  <p className="mt-1 text-[10px] font-black text-slate-500 truncate">{stat.label}</p>
-                  <p className="text-[10px] font-bold text-slate-400">{stat.averagePoint.toFixed(1)}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="rounded-xl bg-white border border-slate-100 p-3">
-            <p className="text-[10px] font-black text-slate-400 mb-2">组内进步</p>
-            {selectedGroupAnalysis.progressLeaders.slice(0, 3).map(item => (
-              <div key={item.student.id} className="flex justify-between gap-2 py-0.5 text-xs font-bold">
-                <span className="truncate text-slate-700">{item.student.name}</span>
-                <span className="text-emerald-600">+{item.change.toFixed(2)}</span>
-              </div>
-            ))}
-            {selectedGroupAnalysis.progressLeaders.length === 0 && <p className="text-xs font-bold text-slate-300">暂无进步数据</p>}
-          </div>
-
-          <div className="rounded-xl bg-white border border-slate-100 p-3">
-            <p className="text-[10px] font-black text-slate-400 mb-2">组内退步</p>
-            {selectedGroupAnalysis.regressionLeaders.slice(0, 3).map(item => (
-              <div key={item.student.id} className="flex justify-between gap-2 py-0.5 text-xs font-bold">
-                <span className="truncate text-slate-700">{item.student.name}</span>
-                <span className="text-red-500">{item.change.toFixed(2)}</span>
-              </div>
-            ))}
-            {selectedGroupAnalysis.regressionLeaders.length === 0 && <p className="text-xs font-bold text-slate-300">暂无退步数据</p>}
-          </div>
         </div>
       </div>
     );
@@ -1578,7 +1507,7 @@ export default function TestWorkspace({
 
   return (
     <div className="h-full flex flex-col p-3 gap-3 overflow-hidden">
-      <section className="bg-white border border-slate-200 rounded-2xl shadow-sm p-3 flex flex-col gap-3 shrink-0 max-h-[30vh] overflow-y-auto custom-scrollbar">
+      <section className="bg-white border border-slate-200 rounded-2xl shadow-sm p-2 flex flex-col gap-2 shrink-0 max-h-[22vh] overflow-y-auto custom-scrollbar">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0 flex-1">
             <div className="relative shrink-0">
@@ -1601,25 +1530,25 @@ export default function TestWorkspace({
               <>
                 <button
                   onClick={openCreateSessionModal}
-                  className="h-10 px-4 rounded-xl border border-dashed border-blue-300 text-blue-600 text-xs font-black hover:bg-blue-50 flex items-center gap-2 shrink-0"
+                  className="h-9 px-3 rounded-xl border border-dashed border-blue-300 text-blue-600 text-[11px] font-black hover:bg-blue-50 flex items-center gap-1.5 shrink-0"
                 >
-                  <Plus className="w-4 h-4" /> 新建测试
+                  <Plus className="w-3.5 h-3.5" /> 新建
                 </button>
-                <label className="h-10 px-3 rounded-xl border border-slate-200 text-slate-600 bg-white text-xs font-black hover:bg-slate-50 flex items-center gap-2 cursor-pointer shrink-0">
-                  <FileUp className="w-4 h-4" /> 导入预排表
+                <label className="h-9 px-3 rounded-xl border border-slate-200 text-slate-600 bg-white text-[11px] font-black hover:bg-slate-50 flex items-center gap-1.5 cursor-pointer shrink-0">
+                  <FileUp className="w-3.5 h-3.5" /> 预排
                   <input
                     type="file"
                     className="hidden"
-                    accept=".xlsx,.xls,.csv"
+                    accept=".xlsx,.csv"
                     onChange={handlePrearrangedImportFile}
                   />
                 </label>
                 <button
                   onClick={() => setConfirmDeleteSession(true)}
                   disabled={!activeSession}
-                  className="h-10 px-3 rounded-xl border border-red-100 text-red-500 bg-white text-xs font-black hover:bg-red-50 flex items-center gap-2 disabled:opacity-30 shrink-0"
+                  className="h-9 px-3 rounded-xl border border-red-100 text-red-500 bg-white text-[11px] font-black hover:bg-red-50 flex items-center gap-1.5 disabled:opacity-30 shrink-0"
                 >
-                  <Trash2 className="w-4 h-4" /> 删除测试
+                  <Trash2 className="w-3.5 h-3.5" /> 删除
                 </button>
               </>
             )}
@@ -1631,17 +1560,17 @@ export default function TestWorkspace({
                   <input
                     value={activeSession.name}
                     onChange={event => updateActiveSession({ name: event.target.value })}
-                    className="h-10 w-40 border border-slate-200 rounded-xl px-3 text-sm font-black outline-none focus:ring-1 focus:ring-blue-500"
+                    className="h-9 w-36 border border-slate-200 rounded-xl px-3 text-xs font-black outline-none focus:ring-1 focus:ring-blue-500"
                   />
                   <input
                     type="date"
                     value={activeSession.date}
                     onChange={event => updateActiveSession({ date: event.target.value })}
-                    className="h-10 border border-slate-200 rounded-xl px-3 text-sm font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                    className="h-9 border border-slate-200 rounded-xl px-3 text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </>
               ) : (
-                <div className="h-10 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-black text-slate-600 flex items-center">
+                <div className="h-9 px-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] font-black text-slate-600 flex items-center">
                   {activeSession.name} · {activeSession.date}
                 </div>
               )}
@@ -1733,6 +1662,13 @@ export default function TestWorkspace({
                       </button>
                     )}
                   </div>
+                  <details className="group rounded-2xl border border-slate-200 bg-white">
+                    <summary className="list-none [&::-webkit-details-marker]:hidden h-9 px-3 flex cursor-pointer items-center gap-2 text-[11px] font-black text-slate-600">
+                      <SlidersHorizontal className="w-3.5 h-3.5 text-slate-400" />
+                      分组工具
+                      <ChevronDown className="w-3.5 h-3.5 text-slate-400 transition-transform group-open:rotate-180" />
+                    </summary>
+                    <div className="border-t border-slate-100 p-2 flex flex-wrap items-center gap-2">
                   <div className="flex border border-slate-200 rounded-2xl p-1 bg-white">
                     <button
                       onClick={() => setGroupingDisplayMode('detail')}
@@ -1870,7 +1806,7 @@ export default function TestWorkspace({
                     groupingLocked || presentStudents.length === 0 ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50',
                   )}>
                     <FileUp className="w-3.5 h-3.5" /> 导入
-                    <input type="file" className="hidden" accept=".xlsx,.xls,.csv" onChange={handleImport} disabled={groupingLocked || presentStudents.length === 0} />
+                    <input type="file" className="hidden" accept=".xlsx,.csv" onChange={handleImport} disabled={groupingLocked || presentStudents.length === 0} />
                   </label>
                   <button
                     onClick={handleExport}
@@ -1887,6 +1823,8 @@ export default function TestWorkspace({
                   >
                     <Trash2 className="w-3.5 h-3.5" /> 删除分组
                   </button>
+                    </div>
+                  </details>
                 </>
               )}
             </div>
@@ -2023,7 +1961,7 @@ export default function TestWorkspace({
                 {activeVersion ? `${activeVersion.name} · ${activeVersion.groups.length} 组` : '暂无分组'}
               </p>
               <p className="text-[10px] font-bold text-slate-400 mt-1">
-                  {isGroupingView ? (groupingLocked ? '分组已锁定，点锁确认后可调整' : '拖动排序；切换版本查看') : '先确定录入版'}
+                  {isGroupingView ? (groupingLocked ? '分组已锁定，点锁确认后可调整' : '点击两名学生交换；切换版本查看') : '先确定录入版'}
               </p>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar py-2 space-y-2">
@@ -2201,7 +2139,6 @@ export default function TestWorkspace({
                     </p>
                   )}
                   {renderVoiceEntryPanel()}
-                  {renderGroupAnalysisPanel()}
                   <div className="space-y-3">
                     {selectedGroup.members.map((member, memberIndex) => renderMemberRow(selectedGroup, member, memberIndex))}
                   </div>

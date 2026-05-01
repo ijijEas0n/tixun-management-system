@@ -56,6 +56,10 @@ const records: Record<string, TestRecord[]> = {
     record('r8', '2026-04-15', 62, { hundred: 13.8, shotPut: 6.6 }, { hundred: 10, shotPut: 5 }),
     record('r9', '2026-04-30', 55, { hundred: 14.0, shotPut: 6.2 }, { hundred: 9, shotPut: 4 }),
   ],
+  s4: [{
+    ...record('r10', '2026-04-30', 0, {}, { hundred: 0, shotPut: 0, tripleJump: 0, eightHundred: 0 }),
+    comments: { hundred: '只记录技术批注，不计入看板' },
+  }],
 };
 
 const overall = buildOverallPerformanceAnalysis(students, records);
@@ -80,6 +84,16 @@ assert.deepEqual(overall.continuousDeclines.map(item => item.student.id), ['s2']
 assert.equal(overall.highVolatility[0].student.id, 's3');
 assert.equal(overall.fastestImprovers[0].student.id, 's3');
 assert.ok(overall.trend.length >= 3);
+assert.deepEqual(
+  overall.trend[overall.trend.length - 1],
+  {
+    key: 'session:session-2026-04-30',
+    label: '2026-04-30测试 · 2026-04-30',
+    date: '2026-04-30',
+    averageTotal: 58.67,
+    recordedCount: 3,
+  },
+);
 assert.equal(overall.testAnalyses.length, 3);
 assert.deepEqual(
   overall.testAnalyses[2].distribution.map(bucket => ({ label: bucket.label, count: bucket.count })),

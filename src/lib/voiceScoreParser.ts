@@ -240,6 +240,7 @@ function extractNote(segment: string, student?: Student): string | null {
   if (student) {
     note = stripStudentNo(note.replace(student.name, ''), student.studentNo).trim();
   }
+  note = note.replace(/^[，,。:：\s]+/, '').trim();
   return note || null;
 }
 
