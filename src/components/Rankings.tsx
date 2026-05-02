@@ -27,6 +27,13 @@ interface RankingsProps {
 type RankType = 'total' | 'hundred' | 'shotPut' | 'tripleJump' | 'eightHundred';
 type DashboardMode = 'overall' | 'event';
 type ExpandedPanel = 'dashboard' | 'rankings';
+type EditingState = {
+  studentId: string;
+  recordId: string;
+  testSessionId?: string;
+  event: RankType;
+  selectedTestKey: string;
+};
 
 function hasValidScore(value: number | null | undefined): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
@@ -41,7 +48,7 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
   const [dashboardMode, setDashboardMode] = useState<DashboardMode>('overall');
   const [dashboardEvent, setDashboardEvent] = useState<SportEventKey>('hundred');
   const [expandedPanel, setExpandedPanel] = useState<ExpandedPanel>('dashboard');
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingState, setEditingState] = useState<EditingState | null>(null);
   const [editValues, setEditValues] = useState<Partial<ScoreSet>>({});
   const [confirmDelete, setConfirmDelete] = useState<{ studentId: string, recordId: string } | null>(null);
   
@@ -122,17 +129,38 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
     return attempts.map(value => formatAttemptValue(event, value)).join(' / ');
   };
 
-  const handleStartEdit = (studentId: string, currentScores: ScoreSet) => {
-    setEditingId(studentId);
-    setEditValues(currentScores);
+  const parseOptionalNumber = (value: string): number | null => {
+    if (value.trim() === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const handleStartEdit = (studentId: string, record: TestRecord) => {
+    setEditingState({
+      studentId,
+      recordId: record.id,
+      testSessionId: record.testSessionId,
+      event: activeType,
+      selectedTestKey,
+    });
+    setEditValues(record.scores);
   };
 
   const handleSaveEdit = () => {
-    if (editingId) {
-      const editingRecord = rankedData.find(item => item.student.id === editingId)?.record;
-      if (!editingRecord) return;
+    if (editingState) {
+      if (editingState.selectedTestKey !== selectedTestKey || editingState.event !== activeType) {
+        handleCancelEdit();
+        return;
+      }
+      const editingRecord = rankedData.find(item => (
+        item.student.id === editingState.studentId && item.record?.id === editingState.recordId
+      ))?.record;
+      if (!editingRecord) {
+        handleCancelEdit();
+        return;
+      }
       onUpdateRecord(
-        editingId,
+        editingState.studentId,
         {
           date: editingRecord.date,
           testSessionId: editingRecord.testSessionId,
@@ -140,14 +168,19 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
         },
         editValues,
       );
-      setEditingId(null);
+      setEditingState(null);
     }
   };
 
   const handleCancelEdit = () => {
-    setEditingId(null);
+    setEditingState(null);
     setEditValues({});
   };
+
+  React.useEffect(() => {
+    setEditingState(null);
+    setEditValues({});
+  }, [activeType, selectedTestKey]);
 
   const handleExport = async () => {
     const exportData = rankedData.map((d, i) => ({
@@ -504,7 +537,7 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
             </thead>
             <tbody className="divide-y divide-slate-50 font-mono text-slate-600">
               {rankedData.map((d, index) => {
-                const isEditing = editingId === d.student.id;
+                const isEditing = editingState?.studentId === d.student.id && editingState.recordId === d.record?.id;
 
                 return (
                   <tr key={d.student.id} className={cn(
@@ -540,8 +573,8 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
                           type="number" 
                           step="0.01"
                           className="w-16 px-1 py-0.5 border border-blue-200 rounded text-center outline-none focus:ring-1 focus:ring-blue-500 font-mono text-xs"
-                          value={editValues.hundred || ''}
-                          onChange={(e) => setEditValues({ ...editValues, hundred: parseFloat(e.target.value) || 0 })}
+                          value={editValues.hundred ?? ''}
+                          onChange={(e) => setEditValues({ ...editValues, hundred: parseOptionalNumber(e.target.value) })}
                         />
                       ) : (
                         <>
@@ -561,8 +594,8 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
                           type="number" 
                           step="0.01"
                           className="w-16 px-1 py-0.5 border border-green-200 rounded text-center outline-none focus:ring-1 focus:ring-green-500 font-mono text-xs"
-                          value={editValues.shotPut || ''}
-                          onChange={(e) => setEditValues({ ...editValues, shotPut: parseFloat(e.target.value) || 0 })}
+                          value={editValues.shotPut ?? ''}
+                          onChange={(e) => setEditValues({ ...editValues, shotPut: parseOptionalNumber(e.target.value) })}
                         />
                       ) : (
                         <>
@@ -582,8 +615,8 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
                           type="number" 
                           step="0.01"
                           className="w-16 px-1 py-0.5 border border-purple-200 rounded text-center outline-none focus:ring-1 focus:ring-purple-500 font-mono text-xs"
-                          value={editValues.tripleJump || ''}
-                          onChange={(e) => setEditValues({ ...editValues, tripleJump: parseFloat(e.target.value) || 0 })}
+                          value={editValues.tripleJump ?? ''}
+                          onChange={(e) => setEditValues({ ...editValues, tripleJump: parseOptionalNumber(e.target.value) })}
                         />
                       ) : (
                         <>
@@ -603,8 +636,8 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
                           type="number" 
                           placeholder="秒"
                           className="w-16 px-1 py-0.5 border border-blue-200 rounded text-center outline-none focus:ring-1 focus:ring-blue-500 font-mono text-xs"
-                          value={editValues.eightHundred || ''}
-                          onChange={(e) => setEditValues({ ...editValues, eightHundred: parseFloat(e.target.value) || 0 })}
+                          value={editValues.eightHundred ?? ''}
+                          onChange={(e) => setEditValues({ ...editValues, eightHundred: parseOptionalNumber(e.target.value) })}
                         />
                       ) : (
                         <>
@@ -653,7 +686,7 @@ export default function Rankings({ students, records, testSessions, onUpdateReco
                       </div>
                     ) : (
                       <button 
-                        onClick={() => handleStartEdit(d.student.id, d.record!.scores)}
+                        onClick={() => handleStartEdit(d.student.id, d.record!)}
                         className="p-1 text-[10px] font-bold text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded border border-transparent hover:border-blue-100 transition-all opacity-0 group-hover:opacity-100 mx-auto flex items-center gap-1"
                       >
                         <Edit2 className="w-3 h-3" /> 修改

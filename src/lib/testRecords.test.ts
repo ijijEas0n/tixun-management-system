@@ -86,3 +86,20 @@ assert.deepEqual(
   ],
   'rankings list same-day sessions separately by test name and date',
 );
+
+assert.deepEqual(
+  buildRankTestOptions({
+    s1: [
+      ...records,
+      {
+        id: 'orphan',
+        date: '2026-04-28',
+        testSessionId: 'missing-session',
+        scores: { hundred: null, shotPut: null, tripleJump: null, eightHundred: null },
+        points: { hundred: 0, shotPut: 0, tripleJump: 0, eightHundred: 0, total: 50 },
+      },
+    ],
+  }, students, sessions).map(option => option.key),
+  ['session:session-a', 'session:session-b', 'date:2026-04-29'],
+  'rankings ignore records whose test session no longer exists',
+);

@@ -102,6 +102,7 @@ import {
 } from '../lib/voiceRecognitionPipeline';
 import { createEmptyVoiceSessionState } from '../lib/voiceSessionState';
 import {
+  buildPrearrangedImportPreview,
   parsePrearrangedWorkbook,
   PrearrangedImportResult,
   PrearrangedStudentImportMode,
@@ -111,6 +112,13 @@ import {
   readWorkbookMatrices,
   writeObjectRowsFile,
 } from '../lib/tableWorkbook';
+import {
+  ENTRY_VERSION_SELECTIONS_KEY,
+  SCORE_SYNC_HISTORY_KEY,
+} from '../lib/auxiliaryStorage';
+import { buildGroupingImportPreview } from '../lib/groupImport';
+import { generateId } from '../lib/id';
+import { parseScoreInput } from '../lib/scoreInput';
 import { cn } from '../lib/utils';
 import ConfirmModal from './ConfirmModal';
 
@@ -121,7 +129,11 @@ interface TestWorkspaceProps {
   testSessions: TestSession[];
   currentYearId: string;
   onAddTestSession: (name: string, date: string, yearId: string, absentStudentIds?: string[]) => TestSession;
-  onUpdateTestSession: (sessionId: string, updates: Partial<TestSession>) => void;
+  onUpdateTestSession: (sessionId: string, updates: Pick<Partial<TestSession>, 'name' | 'date' | 'absentStudentIds'>) => void;
+  onPatchTestSessionInternal: (
+    sessionId: string,
+    updates: Pick<Partial<TestSession>, 'activeVersionIds' | 'entryVersionIds' | 'trialConfigs' | 'groupScheduleConfigs'>,
+  ) => void;
   onDeleteTestSession: (sessionId: string) => void;
   onAddGroupingVersion: (sessionId: string, event: SportEventKey, version: TestSessionGroupingVersion) => void;
   onUpdateGroupingVersion: (
@@ -130,7 +142,7 @@ interface TestWorkspaceProps {
     versionId: string,
     updates: Partial<TestSessionGroupingVersion>,
   ) => void;
-  onUpdateStudent: (id: string, updates: Partial<Student>) => void;
+  onUpdateStudent: (id: string, updates: Pick<Partial<Student>, 'name' | 'gender' | 'studentNo'>) => void;
   onSaveBatch: (
     updates: Array<{
       studentId: string;
@@ -173,8 +185,6 @@ interface ScoreSyncHistoryItem {
 type VoiceMessageTone = 'info' | 'success' | 'error';
 type VoiceStopReason = 'manual' | 'timeout' | 'cleanup' | 'auto-silence' | 'no-speech';
 
-const SCORE_SYNC_HISTORY_KEY = 'testing_group_score_sync_history';
-const ENTRY_VERSION_SELECTIONS_KEY = 'testing_group_entry_version_selections';
 const VOICE_MAX_RECOGNITION_MS = 55_000;
 
 interface TencentCryptoWordArray {
@@ -297,6 +307,7 @@ export default function TestWorkspace({
   currentYearId,
   onAddTestSession,
   onUpdateTestSession,
+  onPatchTestSessionInternal,
   onDeleteTestSession,
   onAddGroupingVersion,
   onUpdateGroupingVersion,
@@ -596,7 +607,7 @@ export default function TestWorkspace({
 
   const handleUnlockGrouping = () => {
     if (!activeSession) return;
-    onUpdateTestSession(activeSession.id, {
+    onPatchTestSessionInternal(activeSession.id, {
       activeVersionIds: activeVersion ? {
         ...activeSession.activeVersionIds,
         [activeEvent]: activeVersion.id,
@@ -623,7 +634,7 @@ export default function TestWorkspace({
       return;
     }
 
-    onUpdateTestSession(activeSession.id, {
+    onPatchTestSessionInternal(activeSession.id, {
       activeVersionIds: {
         ...activeSession.activeVersionIds,
         [activeEvent]: versionId,
@@ -634,7 +645,7 @@ export default function TestWorkspace({
 
   const handleSetEntryVersion = () => {
     if (!activeSession || !activeVersion) return;
-    onUpdateTestSession(activeSession.id, {
+    onPatchTestSessionInternal(activeSession.id, {
       activeVersionIds: {
         ...activeSession.activeVersionIds,
         [activeEvent]: activeVersion.id,
@@ -649,7 +660,7 @@ export default function TestWorkspace({
   const updateGroupScheduleConfig = (updates: { startTime?: string; intervalMinutes?: number }) => {
     if (!activeSession || !canEditCurrentGroupSchedule) return;
     const nextIntervalMinutes = updates.intervalMinutes ?? groupScheduleConfig.intervalMinutes ?? 0;
-    onUpdateTestSession(activeSession.id, {
+    onPatchTestSessionInternal(activeSession.id, {
       groupScheduleConfigs: {
         ...(activeSession.groupScheduleConfigs || {}),
         [activeEvent]: {
@@ -1086,7 +1097,7 @@ export default function TestWorkspace({
 
   const handleAddTrial = () => {
     if (!activeSession || trialCount >= 10) return;
-    onUpdateTestSession(activeSession.id, {
+    onPatchTestSessionInternal(activeSession.id, {
       trialConfigs: {
         ...activeSession.trialConfigs,
         [activeEvent]: nextTrialCount(trialCount),
@@ -1096,7 +1107,7 @@ export default function TestWorkspace({
 
   const handleRemoveTrial = () => {
     if (!activeSession || trialCount <= 1) return;
-    onUpdateTestSession(activeSession.id, {
+    onPatchTestSessionInternal(activeSession.id, {
       trialConfigs: {
         ...activeSession.trialConfigs,
         [activeEvent]: previousTrialCount(trialCount),
@@ -1113,6 +1124,22 @@ export default function TestWorkspace({
     if (!activeSession || !activeVersion || !activeRecordTarget || !draftKey || !canSaveEntryScores) return;
     const versionDraft = draftInputs[draftKey] || {};
     const versionComments = draftComments[draftKey] || {};
+    const invalidDrafts = groupsToSync.flatMap(group => (
+      group.members.flatMap(member => (
+        (versionDraft[member.studentId] || [])
+          .slice(0, trialCount)
+          .flatMap(value => {
+            if (!value.trim()) return [];
+            const parsed = parseScoreInput(activeEvent, value);
+            return 'error' in parsed ? [{ studentId: member.studentId, groupName: group.name, error: parsed.error }] : [];
+          })
+      ))
+    ));
+
+    if (invalidDrafts.length > 0) {
+      showSyncToast(`${scopeLabel}有 ${invalidDrafts.length} 个成绩格式错误，已停止同步`);
+      return;
+    }
     const updates = buildScoreSyncUpdates({
       groups: groupsToSync,
       event: activeEvent,
@@ -1132,7 +1159,7 @@ export default function TestWorkspace({
 
     onSaveBatch(updates);
     setSyncHistory(prev => [{
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: generateId('sync'),
       sessionId: activeSession.id,
       versionId: activeVersion.id,
       event: activeEvent,
@@ -1220,45 +1247,24 @@ export default function TestWorkspace({
 
     try {
       const rows = await readFirstSheetObjects(file);
-      const grouped = new Map<string, TestSessionGroup>();
-
-      rows.forEach((row, index) => {
-        const studentNo = String(row['学号/编号'] || row['学号'] || row['编号'] || '').trim();
-        const name = String(row['姓名'] || row['Name'] || '').trim();
-        const student = presentStudents.find(item => (
-          (studentNo && item.studentNo === studentNo) || (!studentNo && item.name === name)
-        ));
-        if (!student) return;
-
-        const groupName = String(row['组名'] || row['组别'] || row['Group'] || `${student.gender === 'male' ? '男生' : '女生'}第1组`).trim();
-        const key = activeEvent === 'eightHundred' ? groupName : `${student.gender}:${groupName}`;
-        const group = grouped.get(key) || {
-          id: `import-${Date.now()}-${index}`,
-          name: groupName,
-          marker: String(row['标记'] || '').trim(),
-          gender: activeEvent === 'eightHundred' ? 'mixed' : student.gender,
-          members: [],
-        };
-        const lane = parseInt(String(row['跑道'] || ''), 10);
-        group.members.push({
-          studentId: student.id,
-          lane: activeEvent === 'hundred' ? (Number.isFinite(lane) ? lane : group.members.length + 1) : undefined,
-          order: group.members.length + 1,
-        });
-        grouped.set(key, group);
-      });
-
-      const importedVersion: TestSessionGroupingVersion = {
-        id: `${activeEvent}-import-${Date.now()}`,
-        name: `导入版本 ${versions.length + 1}`,
+      const preview = buildGroupingImportPreview({
         event: activeEvent,
-        createdAt: new Date().toISOString(),
-        source: 'imported',
-        mode: 'size',
-        groups: Array.from(grouped.values()),
-      };
-      onAddGroupingVersion(activeSession.id, activeEvent, importedVersion);
-      setSelectedGroupId(importedVersion.groups[0]?.id || null);
+        presentStudents,
+        rows,
+        versionName: `导入版本 ${versions.length + 1}`,
+      });
+      if (!preview.version) {
+        const issueCount = preview.conflicts.length + preview.errors.length + preview.unmatched.length;
+        const firstIssue = preview.conflicts[0] || preview.errors[0] || preview.unmatched[0];
+        showSyncToast(firstIssue ? `分组导入失败：${firstIssue.message}` : `分组导入失败：${issueCount} 个问题`);
+        return;
+      }
+      onAddGroupingVersion(activeSession.id, activeEvent, preview.version);
+      setSelectedGroupId(preview.version.groups[0]?.id || null);
+      const lowConfidenceText = preview.lowConfidenceMatches.length > 0
+        ? `，${preview.lowConfidenceMatches.length} 条姓名低置信匹配`
+        : '';
+      showSyncToast(`已导入 ${preview.version.groups.length} 个分组${lowConfidenceText}`);
     } catch {
       showSyncToast('分组表读取失败，请检查文件格式');
     }
@@ -1290,6 +1296,22 @@ export default function TestWorkspace({
 
   const handleConfirmPrearrangedImport = () => {
     if (!pendingPrearrangedImport) return;
+    const preview = buildPrearrangedImportPreview(
+      {
+        years: [{ id: currentYearId, name: currentYearId }],
+        students,
+        records: {},
+        testSessions,
+      },
+      currentYearId,
+      pendingPrearrangedImport,
+      prearrangedStudentMode,
+    );
+    if (preview.conflicts.length > 0 || preview.errors.length > 0) {
+      const firstConflict = preview.conflicts[0];
+      showSyncToast(firstConflict ? `预排导入停止：${firstConflict.message}` : '预排导入存在错误，已停止');
+      return;
+    }
     const removedSessionIds = prearrangedStudentMode === 'replaceYear'
       ? testSessions.map(session => session.id)
       : [];

@@ -11,7 +11,6 @@ import StudentProfile from './components/StudentProfile';
 import YearSelector from './components/YearSelector';
 import TestWorkspace from './components/TestWorkspace';
 import { useData } from './lib/storage';
-import { Student } from './types';
 
 export default function App() {
   const {
@@ -31,6 +30,7 @@ export default function App() {
     batchAddStudents,
     addTestSession,
     updateTestSession,
+    patchTestSessionInternal,
     deleteTestSession,
     addGroupingVersion,
     updateGroupingVersion,
@@ -38,21 +38,22 @@ export default function App() {
   } = useData();
 
   const [activeTab, setActiveTab] = useState('grouping'); // grouping, entry, students, rankings
-  const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+  const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [isYearSelectorOpen, setIsYearSelectorOpen] = useState(false);
 
   const currentYear = data.years.find(y => y.id === currentYearId);
   const studentsInYear = data.students.filter(s => s.yearId === currentYearId);
+  const selectedStudent = selectedStudentId ? data.students.find(s => s.id === selectedStudentId) || null : null;
 
   const renderContent = () => {
     if (selectedStudent) {
       return (
-        <StudentProfile
-          student={selectedStudent}
-          records={data.records[selectedStudent.id] || []}
-          onBack={() => setSelectedStudent(null)}
-        />
-      );
+          <StudentProfile
+            student={selectedStudent}
+            records={data.records[selectedStudent.id] || []}
+            onBack={() => setSelectedStudentId(null)}
+          />
+        );
     }
 
     switch (activeTab) {
@@ -64,7 +65,7 @@ export default function App() {
             onBatchAdd={(list) => batchAddStudents(list, currentYearId)}
             onDelete={deleteStudent}
             onBatchDelete={batchDeleteStudents}
-            onSelect={setSelectedStudent}
+            onSelect={(student) => setSelectedStudentId(student.id)}
           />
         );
       case 'grouping':
@@ -78,6 +79,7 @@ export default function App() {
             currentYearId={currentYearId}
             onAddTestSession={addTestSession}
             onUpdateTestSession={updateTestSession}
+            onPatchTestSessionInternal={patchTestSessionInternal}
             onDeleteTestSession={deleteTestSession}
             onAddGroupingVersion={addGroupingVersion}
             onUpdateGroupingVersion={updateGroupingVersion}
@@ -110,7 +112,7 @@ export default function App() {
         activeTab={activeTab} 
         setActiveTab={(tab) => {
           setActiveTab(tab);
-          setSelectedStudent(null);
+          setSelectedStudentId(null);
         }}
         years={data.years}
         currentYearId={currentYearId}
@@ -127,7 +129,7 @@ export default function App() {
           onSelect={(id) => {
             setCurrentYearId(id);
             setIsYearSelectorOpen(false);
-            setSelectedStudent(null);
+            setSelectedStudentId(null);
           }}
           onAdd={addYear}
           onDelete={deleteYear}

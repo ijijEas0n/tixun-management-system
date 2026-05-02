@@ -3,7 +3,7 @@ import { Search, UserPlus, Upload, Trash2, ChevronRight, User } from 'lucide-rea
 import { Student, StudentGender } from '../types';
 import { getFirstLetter, cn } from '../lib/utils';
 import ConfirmModal from './ConfirmModal';
-import { parseStudentImportWorkbook } from '../lib/studentImport';
+import { buildStudentImportReport, parseStudentImportWorkbook, StudentImportReport } from '../lib/studentImport';
 import { readWorkbookMatrices } from '../lib/tableWorkbook';
 
 interface StudentListProps {
@@ -25,6 +25,7 @@ export default function StudentList({ students, onAdd, onBatchAdd, onDelete, onB
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [isBatchDeleting, setIsBatchDeleting] = useState(false);
   const [importMessage, setImportMessage] = useState('');
+  const [pendingImportReport, setPendingImportReport] = useState<StudentImportReport | null>(null);
 
   const filteredStudents = useMemo(() => {
     return students
@@ -84,8 +85,17 @@ export default function StudentList({ students, onAdd, onBatchAdd, onDelete, onB
       const sheets = await readWorkbookMatrices(file);
       const newStudentsBatch = parseStudentImportWorkbook(sheets);
       if (newStudentsBatch.length > 0) {
-        onBatchAdd(newStudentsBatch);
-        setImportMessage(`已读取 ${newStudentsBatch.length} 名学生，重复档案会自动更新`);
+        const report = buildStudentImportReport(students, newStudentsBatch);
+        if (report.conflicts.length > 0 || report.errors.length > 0) {
+          const firstConflict = report.conflicts[0];
+          const firstError = report.errors[0];
+          setImportMessage(firstConflict
+            ? `导入已停止：第${firstConflict.row}行 ${firstConflict.message}`
+            : `导入已停止：第${firstError.row}行 ${firstError.message}`);
+        } else {
+          setPendingImportReport(report);
+          setImportMessage(`待确认：新增 ${report.created.length} 人，更新 ${report.updated.length} 人，跳过 ${report.skipped.length} 人`);
+        }
       } else {
         setImportMessage('没有识别到学生名单');
       }
@@ -93,6 +103,13 @@ export default function StudentList({ students, onAdd, onBatchAdd, onDelete, onB
       setImportMessage('表格读取失败，请检查文件格式');
     }
     e.target.value = '';
+  };
+
+  const applyPendingImport = () => {
+    if (!pendingImportReport) return;
+    onBatchAdd([...pendingImportReport.created, ...pendingImportReport.updated]);
+    setImportMessage(`已导入：新增 ${pendingImportReport.created.length} 人，更新 ${pendingImportReport.updated.length} 人，跳过 ${pendingImportReport.skipped.length} 人`);
+    setPendingImportReport(null);
   };
 
   return (
@@ -291,6 +308,18 @@ export default function StudentList({ students, onAdd, onBatchAdd, onDelete, onB
           setConfirmDeleteId(null);
         }}
         onCancel={() => setConfirmDeleteId(null)}
+      />
+      <ConfirmModal
+        isOpen={!!pendingImportReport}
+        title="确认导入学生？"
+        message={pendingImportReport
+          ? `将新增 ${pendingImportReport.created.length} 人，更新 ${pendingImportReport.updated.length} 人，跳过 ${pendingImportReport.skipped.length} 人。`
+          : ''}
+        onConfirm={applyPendingImport}
+        onCancel={() => {
+          setPendingImportReport(null);
+          setImportMessage('已取消导入');
+        }}
       />
 
       <ConfirmModal
