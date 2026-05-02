@@ -67,8 +67,8 @@ const CHINESE_DIGITS: Record<string, number> = {
 function cellText(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (value instanceof Date) {
-    const hours = value.getHours();
-    const minutes = value.getMinutes();
+    const hours = value.getUTCHours();
+    const minutes = value.getUTCMinutes();
     return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
   }
   return String(value).trim();

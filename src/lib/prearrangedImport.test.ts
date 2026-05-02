@@ -200,3 +200,21 @@ assert.equal(
   'female',
   'event sheet gender updates a student first seen in the roster sheet',
 );
+
+const excelDateTimeImport = parsePrearrangedWorkbook({
+  三级跳测试: [
+    ['时间', '道次', '顺序', '姓名', '序号'],
+    [new Date(Date.UTC(1899, 11, 30, 15, 30)), '第一道', '1', '甘振豪', '29'],
+    ['', '', '2', '范泽涵', '47'],
+  ],
+}, {
+  fileName: '2026.5.1四项测试.xlsx',
+  yearId: 'y1',
+  now: '2026-05-02T08:00:00.000Z',
+});
+
+assert.equal(
+  excelDateTimeImport.testSession.groupingVersions.tripleJump[0].groups[0].startTime,
+  '15:30',
+  'Excel time cells keep the displayed time without local timezone offset',
+);
