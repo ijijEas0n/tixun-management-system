@@ -1,7 +1,7 @@
 import { ScoreSet, SportEventKey, Student, TestRecord, TestSessionGroup } from '../types';
 import { calculatePoints } from './scoring';
 import { isSameRecordTarget, RecordTarget } from './testRecords';
-import { parseTime800m } from './utils';
+import { parseScoreInput } from './scoreInput';
 
 const EVENTS: SportEventKey[] = ['hundred', 'shotPut', 'tripleJump', 'eightHundred'];
 
@@ -55,8 +55,8 @@ interface ApplyUndoSnapshotsOptions {
 }
 
 function parseEventScore(event: SportEventKey, value: string) {
-  if (!value.trim()) return null;
-  return event === 'eightHundred' ? parseTime800m(value) : parseFloat(value);
+  const parsed = parseScoreInput(event, value);
+  return 'error' in parsed ? Number.NaN : parsed.value;
 }
 
 function isLowerBetter(event: SportEventKey) {

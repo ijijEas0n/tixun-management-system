@@ -90,6 +90,11 @@ export interface SingleEventPerformanceAnalysis {
 export interface OverallPerformanceAnalysis {
   summary: {
     studentCount: number;
+    expectedStudentCount: number;
+    testedStudentCount: number;
+    absentStudentCount: number;
+    unenteredStudentCount: number;
+    effectiveScoreCount: number;
     recordedStudentCount: number;
     recordCount: number;
     averageTotal: number | null;
@@ -262,6 +267,20 @@ function getSortedTestOptions(
 ) {
   return buildRankTestOptions(records, students, testSessions)
     .sort((a, b) => a.date.localeCompare(b.date) || a.label.localeCompare(b.label));
+}
+
+function filterInvalidSessionRecords(
+  records: Record<string, TestRecord[]>,
+  testSessions: TestSession[] = [],
+): Record<string, TestRecord[]> {
+  if (testSessions.length === 0) return records;
+  const sessionIds = new Set(testSessions.map(session => session.id));
+  return Object.fromEntries(
+    Object.entries(records).map(([studentId, studentRecords]) => [
+      studentId,
+      studentRecords.filter(record => !record.testSessionId || sessionIds.has(record.testSessionId)),
+    ]),
+  );
 }
 
 function valueFromRecord(record: TestRecord, event?: SportEventKey): number {
@@ -486,19 +505,33 @@ export function buildOverallPerformanceAnalysis(
   records: Record<string, TestRecord[]>,
   testSessions: TestSession[] = [],
 ): OverallPerformanceAnalysis {
-  const trend = buildTrend(records, students, testSessions);
-  const testAnalyses = buildPerTestAnalyses(records, students, testSessions);
+  const validRecords = filterInvalidSessionRecords(records, testSessions);
+  const trend = buildTrend(validRecords, students, testSessions);
+  const testAnalyses = buildPerTestAnalyses(validRecords, students, testSessions);
   const latestTest = trend[trend.length - 1] || null;
-  const latestItems = latestTest ? latestRecordsForKey(records, students, latestTest.key).filter(item => hasRecordedScore(item.record)) : [];
+  const latestItems = latestTest ? latestRecordsForKey(validRecords, students, latestTest.key).filter(item => hasRecordedScore(item.record)) : [];
   const latestTotals = latestItems.map(item => item.record.points.total).filter(Number.isFinite);
-  const allRecordCount = students.reduce((count, student) => count + (records[student.id] || []).filter(hasRecordedScore).length, 0);
+  const latestSessionId = latestTest?.key.startsWith('session:') ? latestTest.key.slice('session:'.length) : '';
+  const latestSession = latestSessionId ? testSessions.find(session => session.id === latestSessionId) : undefined;
+  const studentIds = new Set(students.map(student => student.id));
+  const absentStudentCount = latestSession
+    ? (latestSession.absentStudentIds || []).filter(studentId => studentIds.has(studentId)).length
+    : 0;
+  const expectedStudentCount = Math.max(0, students.length - absentStudentCount);
+  const testedStudentCount = latestItems.length;
+  const allRecordCount = students.reduce((count, student) => count + (validRecords[student.id] || []).filter(hasRecordedScore).length, 0);
   const eventStats = buildEventStats(latestItems);
-  const allEventStats = buildOverallEventStats(records, students);
-  const changes = buildStudentChanges(students, records);
+  const allEventStats = buildOverallEventStats(validRecords, students);
+  const changes = buildStudentChanges(students, validRecords);
 
   return {
     summary: {
       studentCount: students.length,
+      expectedStudentCount,
+      testedStudentCount,
+      absentStudentCount,
+      unenteredStudentCount: Math.max(0, expectedStudentCount - testedStudentCount),
+      effectiveScoreCount: latestTotals.length,
       recordedStudentCount: latestItems.length,
       recordCount: allRecordCount,
       averageTotal: average(latestTotals),
@@ -516,9 +549,9 @@ export function buildOverallPerformanceAnalysis(
     overallWeakestEvent: weakestEvent(allEventStats),
     progressLeaders: changes.filter(item => item.change > 0).sort((a, b) => b.change - a.change).slice(0, 8),
     regressionLeaders: changes.filter(item => item.change < 0).sort((a, b) => a.change - b.change).slice(0, 8),
-    continuousDeclines: buildContinuousDeclines(students, records),
-    highVolatility: buildHighVolatility(students, records),
-    fastestImprovers: buildFastestImprovers(students, records),
+    continuousDeclines: buildContinuousDeclines(students, validRecords),
+    highVolatility: buildHighVolatility(students, validRecords),
+    fastestImprovers: buildFastestImprovers(students, validRecords),
   };
 }
 
@@ -528,8 +561,9 @@ export function buildSingleEventPerformanceAnalysis(
   event: SportEventKey,
   testSessions: TestSession[] = [],
 ): SingleEventPerformanceAnalysis {
+  const validRecords = filterInvalidSessionRecords(records, testSessions);
   const eventConfig = ANALYSIS_EVENTS.find(item => item.id === event)!;
-  const testAnalyses = buildPerTestAnalyses(records, students, testSessions, event);
+  const testAnalyses = buildPerTestAnalyses(validRecords, students, testSessions, event);
   return {
     event,
     label: eventConfig.label,
@@ -542,9 +576,9 @@ export function buildSingleEventPerformanceAnalysis(
       recordedCount: item.recordedCount,
     })),
     testAnalyses,
-    fastestImprovers: buildFastestImproversForEvent(students, records, event),
-    continuousDeclines: buildContinuousDeclinesForEvent(students, records, event),
-    highVolatility: buildHighVolatilityForEvent(students, records, event),
+    fastestImprovers: buildFastestImproversForEvent(students, validRecords, event),
+    continuousDeclines: buildContinuousDeclinesForEvent(students, validRecords, event),
+    highVolatility: buildHighVolatilityForEvent(students, validRecords, event),
   };
 }
 

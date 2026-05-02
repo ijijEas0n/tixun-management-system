@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "test": "tsx src/lib/scoring.test.ts && tsx src/lib/utils.test.ts && tsx src/lib/studentStats.test.ts && tsx src/lib/grouping.test.ts && tsx src/lib/testRecords.test.ts && tsx src/lib/studentReport.test.ts && tsx src/lib/scoreSync.test.ts && tsx src/lib/prearrangedImport.test.ts && tsx src/lib/studentImport.test.ts && tsx src/lib/entryDrafts.test.ts && tsx src/lib/storage.test.ts && tsx src/lib/tableWorkbook.test.ts && tsx src/lib/performanceAnalysis.test.ts && tsx src/lib/voiceScoreParser.test.ts && tsx src/lib/voiceActivityDetector.test.ts && tsx src/lib/voiceRecognitionPipeline.test.ts && tsx src/lib/voiceSessionState.test.ts && tsx src/lib/tencentVoiceSettings.test.ts && tsx src/lib/tencentVoiceError.test.ts",
+    "test": "tsx src/lib/scoring.test.ts && tsx src/lib/utils.test.ts && tsx src/lib/studentStats.test.ts && tsx src/lib/grouping.test.ts && tsx src/lib/testRecords.test.ts && tsx src/lib/studentReport.test.ts && tsx src/lib/scoreSync.test.ts && tsx src/lib/prearrangedImport.test.ts && tsx src/lib/studentImport.test.ts && tsx src/lib/entryDrafts.test.ts && tsx src/lib/auxiliaryStorage.test.ts && tsx src/lib/dataIntegrity.test.ts && tsx src/lib/groupImport.test.ts && tsx src/lib/scoreInput.test.ts && tsx src/lib/storage.test.ts && tsx src/lib/tableWorkbook.test.ts && tsx src/lib/performanceAnalysis.test.ts && tsx src/lib/voiceScoreParser.test.ts && tsx src/lib/voiceActivityDetector.test.ts && tsx src/lib/voiceRecognitionPipeline.test.ts && tsx src/lib/voiceSessionState.test.ts && tsx src/lib/tencentVoiceSettings.test.ts && tsx src/lib/tencentVoiceError.test.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

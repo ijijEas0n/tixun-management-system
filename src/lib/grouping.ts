@@ -9,6 +9,7 @@ import {
   TestSessionGroupGender,
   TestSessionGroupingVersion,
 } from '../types';
+import { generateId } from './id';
 
 interface CreateGroupingVersionOptions {
   event: SportEventKey;
@@ -326,7 +327,7 @@ function toGroup(
 ): TestSessionGroup {
   const genderLabel = gender === 'male' ? '男生' : gender === 'female' ? '女生' : '混合';
   return {
-    id: `${event}-${gender}-${groupNumber}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: generateId('group'),
     name: `${genderLabel}第${groupNumber}组`,
     marker: '',
     gender,
@@ -355,7 +356,7 @@ export function createGroupingVersion({
       : splitByCount(allStudents, groupCount);
 
     return {
-      id: `${event}-v${existingVersionCount + 1}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: generateId('grouping'),
       name: `版本 ${existingVersionCount + 1}`,
       event,
       createdAt: now,
@@ -390,7 +391,7 @@ export function createGroupingVersion({
   });
 
   return {
-    id: `${event}-v${existingVersionCount + 1}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: generateId('grouping'),
     name: `版本 ${existingVersionCount + 1}`,
     event,
     createdAt: now,

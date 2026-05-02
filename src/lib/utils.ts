@@ -22,12 +22,15 @@ export function formatTime800m(seconds: number | null): string {
 }
 
 export function parseTime800m(input: string): number | null {
-  const parts = input.split(/[:：]/);
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const parts = trimmed.split(/[:：]/);
   if (parts.length === 2) {
     const min = parseFloat(parts[0]);
     const sec = parseFloat(parts[1]);
-    if (!isNaN(min) && !isNaN(sec)) return min * 60 + sec;
+    if (!isNaN(min) && !isNaN(sec) && min >= 0 && sec >= 0 && sec < 60) return min * 60 + sec;
+    return null;
   }
-  const val = parseFloat(input);
-  return isNaN(val) ? null : val;
+  const val = parseFloat(trimmed);
+  return isNaN(val) || val < 0 ? null : val;
 }

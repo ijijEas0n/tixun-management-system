@@ -36,6 +36,7 @@ export function buildRankTestOptions(
 ): RankTestOption[] {
   const studentIds = new Set(students.map(student => student.id));
   const sessionsById = new Map(testSessions.map(session => [session.id, session]));
+  const hasSessionContext = testSessions.length > 0;
   const options = new Map<string, RankTestOption>();
   const countedStudentIds = new Map<string, Set<string>>();
 
@@ -43,6 +44,7 @@ export function buildRankTestOptions(
     if (!studentIds.has(studentId)) return;
 
     studentRecords.forEach(record => {
+      if (record.testSessionId && hasSessionContext && !sessionsById.has(record.testSessionId)) return;
       const key = getRecordTestKey(record);
       const session = record.testSessionId ? sessionsById.get(record.testSessionId) : undefined;
       const label = session

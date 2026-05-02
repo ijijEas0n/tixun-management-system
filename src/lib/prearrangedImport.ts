@@ -9,6 +9,7 @@ import {
   TestSessionGroupingVersion,
 } from '../types';
 import { createDefaultTrialConfigs, createEmptyGroupingVersions, getEventLabel } from './grouping';
+import { generateId } from './id';
 
 type SheetMatrix = unknown[][];
 type WorkbookMatrices = Record<string, SheetMatrix>;
@@ -38,6 +39,21 @@ export interface PrearrangedImportResult {
 }
 
 export type PrearrangedStudentImportMode = 'appendMissing' | 'linkOnly' | 'replaceYear';
+
+export const PREARRANGED_BACKUP_STORAGE_KEY = 'fujian_sports_app_data_prearranged_backup';
+
+export interface PrearrangedImportConflict {
+  type: 'SAME_STUDENT_NO_DIFFERENT_NAME' | 'DUPLICATE_NAME_WITHOUT_STUDENT_NO';
+  message: string;
+  student: Student;
+  existing?: Student[];
+}
+
+export interface PrearrangedImportPreview {
+  conflicts: PrearrangedImportConflict[];
+  errors: string[];
+  backup?: { id: string; createdAt: string; data: AppData };
+}
 
 interface HeaderMap {
   time: number;
@@ -149,12 +165,16 @@ function makeStudentKey(studentNo: string, name: string): string {
 }
 
 function makeStudentId(yearId: string, studentNo: string, name: string): string {
-  const key = makeStudentKey(studentNo, name);
-  return `import-${yearId}-${encodeURIComponent(key)}`;
+  void yearId;
+  void studentNo;
+  void name;
+  return generateId('stu');
 }
 
 function makeVersionId(event: SportEventKey, sessionId: string): string {
-  return `${sessionId}-${event}-imported`;
+  void event;
+  void sessionId;
+  return generateId('grouping');
 }
 
 function resolveGroupGender(event: SportEventKey, members: TestSessionGroup['members'], studentsById: Map<string, Student>): TestSessionGroupGender {
@@ -189,7 +209,7 @@ export function parsePrearrangedWorkbook(
   const now = options.now || new Date().toISOString();
   const sessionName = stripExtension(options.fileName);
   const sessionDate = inferDateFromFileName(options.fileName);
-  const sessionId = `prearranged-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  const sessionId = generateId('session');
   const studentsByKey = new Map<string, Student>();
   const warnings: string[] = [];
   const groupingVersions = createEmptyGroupingVersions();
@@ -377,6 +397,60 @@ export function replaceYearDataWithPrearrangedImport(
   };
 }
 
+export function createPrearrangedBackupSnapshot(data: AppData, now = new Date().toISOString()) {
+  return {
+    id: generateId('backup'),
+    createdAt: now,
+    data,
+  };
+}
+
+export function buildPrearrangedImportPreview(
+  data: AppData,
+  yearId: string,
+  importResult: PrearrangedImportResult,
+  mode: PrearrangedStudentImportMode,
+): PrearrangedImportPreview {
+  const existingYearStudents = data.students.filter(student => student.yearId === yearId);
+  const existingByNo = new Map(existingYearStudents.filter(student => student.studentNo).map(student => [student.studentNo, student]));
+  const existingByName = new Map<string, Student[]>();
+  existingYearStudents.forEach(student => {
+    existingByName.set(student.name, [...(existingByName.get(student.name) || []), student]);
+  });
+  const conflicts: PrearrangedImportConflict[] = [];
+
+  importResult.students.forEach(imported => {
+    if (imported.studentNo) {
+      const existing = existingByNo.get(imported.studentNo);
+      if (existing && existing.name !== imported.name) {
+        conflicts.push({
+          type: 'SAME_STUDENT_NO_DIFFERENT_NAME',
+          message: `学号 ${imported.studentNo} 已属于 ${existing.name}，导入表中为 ${imported.name}`,
+          student: imported,
+          existing: [existing],
+        });
+      }
+      return;
+    }
+
+    const nameMatches = existingByName.get(imported.name) || [];
+    if (nameMatches.length > 0) {
+      conflicts.push({
+        type: 'DUPLICATE_NAME_WITHOUT_STUDENT_NO',
+        message: `无学号学生 ${imported.name} 与现有档案重名，不能自动匹配`,
+        student: imported,
+        existing: nameMatches,
+      });
+    }
+  });
+
+  return {
+    conflicts,
+    errors: [],
+    backup: mode === 'replaceYear' ? createPrearrangedBackupSnapshot(data) : undefined,
+  };
+}
+
 function findMatchingStudent(imported: Student, existingStudents: Student[]): Student | undefined {
   const exactMatch = existingStudents.find(student => (
     student.studentNo === imported.studentNo && student.name === imported.name
@@ -420,6 +494,9 @@ export function mergePrearrangedImportWithYearData(
   importResult: PrearrangedImportResult,
   mode: PrearrangedStudentImportMode = 'appendMissing',
 ): AppData {
+  const preview = buildPrearrangedImportPreview(data, yearId, importResult, mode);
+  if (preview.conflicts.length > 0 || preview.errors.length > 0) return data;
+
   if (mode === 'replaceYear') {
     return replaceYearDataWithPrearrangedImport(data, yearId, importResult);
   }

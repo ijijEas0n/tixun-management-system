@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  buildPrearrangedImportPreview,
   mergePrearrangedImportWithYearData,
   parsePrearrangedWorkbook,
   replaceYearDataWithPrearrangedImport,
@@ -218,3 +219,34 @@ assert.equal(
   '15:30',
   'Excel time cells keep the displayed time without local timezone offset',
 );
+
+const conflictingImport = parsePrearrangedWorkbook({
+  百米: [
+    ['时间', '道次', '姓名', '序号'],
+    ['09:00', '1', '新姓名', '001'],
+  ],
+}, {
+  fileName: '2026.5.4测试.xlsx',
+  yearId: 'y1',
+  now: '2026-05-04T08:00:00.000Z',
+});
+const conflictPreview = buildPrearrangedImportPreview(
+  {
+    ...oldData,
+    students: [{ id: 'existing-001', studentNo: '001', name: '原姓名', gender: 'male', yearId: 'y1' }],
+    records: {},
+    testSessions: [],
+  },
+  'y1',
+  conflictingImport,
+  'appendMissing',
+);
+assert.equal(
+  conflictPreview.conflicts[0].type,
+  'SAME_STUDENT_NO_DIFFERENT_NAME',
+  'prearranged import reports same number with a different name as a conflict',
+);
+
+const replacePreview = buildPrearrangedImportPreview(oldData, 'y1', importResult, 'replaceYear');
+assert.ok(replacePreview.backup?.id.startsWith('backup_'), 'replace-year prearranged import creates a backup snapshot before apply');
+assert.equal(replacePreview.backup?.data.students.length, oldData.students.length, 'backup snapshot keeps the old app data');
