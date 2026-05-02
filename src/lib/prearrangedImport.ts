@@ -430,14 +430,14 @@ export function buildPrearrangedImportPreview(
           existing: [existing],
         });
       }
-      return;
+      if (existing) return;
     }
 
     const nameMatches = existingByName.get(imported.name) || [];
-    if (nameMatches.length > 0) {
+    if (nameMatches.length > 1) {
       conflicts.push({
         type: 'DUPLICATE_NAME_WITHOUT_STUDENT_NO',
-        message: `无学号学生 ${imported.name} 与现有档案重名，不能自动匹配`,
+        message: `学生 ${imported.name} 对应多份档案，不能自动匹配`,
         student: imported,
         existing: nameMatches,
       });
@@ -456,7 +456,11 @@ function findMatchingStudent(imported: Student, existingStudents: Student[]): St
     student.studentNo === imported.studentNo && student.name === imported.name
   ));
   if (exactMatch) return exactMatch;
-  if (imported.studentNo) return undefined;
+  if (imported.studentNo && existingStudents.some(student => (
+    student.studentNo === imported.studentNo && student.name !== imported.name
+  ))) {
+    return undefined;
+  }
 
   const nameMatches = existingStudents.filter(student => student.name === imported.name);
   return nameMatches.length === 1 ? nameMatches[0] : undefined;

@@ -149,6 +149,68 @@ assert.equal(
   'imported groups do not keep duplicate generated student ids for matched students',
 );
 
+const uniqueNameDifferentNoImport = parsePrearrangedWorkbook({
+  百米: [
+    ['时间', '道次', '姓名', '序号'],
+    ['09:00', '1', '叶子超', '1'],
+  ],
+}, {
+  fileName: '2026.5.2测试.xlsx',
+  yearId: 'y1',
+  now: '2026-05-02T08:00:00.000Z',
+});
+const uniqueNameDifferentNoData: AppData = {
+  ...oldData,
+  students: [
+    { id: 'archive-yezi', studentNo: '26001', name: '叶子超', gender: 'male', yearId: 'y1' },
+  ],
+  records: {},
+  testSessions: [],
+};
+const uniqueNameDifferentNoMerged = mergePrearrangedImportWithYearData(
+  uniqueNameDifferentNoData,
+  'y1',
+  uniqueNameDifferentNoImport,
+  'appendMissing',
+);
+assert.equal(
+  uniqueNameDifferentNoMerged.students.filter(student => student.yearId === 'y1' && student.name === '叶子超').length,
+  1,
+  'default import links a unique same-name student even when the prearranged number differs from the archive number',
+);
+assert.equal(
+  uniqueNameDifferentNoMerged.testSessions[0].groupingVersions.hundred[0].groups[0].members[0].studentId,
+  'archive-yezi',
+  'group members use the existing archive id when matched by unique name',
+);
+
+const uniqueNameNoNumberImport = parsePrearrangedWorkbook({
+  百米: [
+    ['时间', '道次', '姓名', '序号'],
+    ['09:00', '1', '叶子超', ''],
+  ],
+}, {
+  fileName: '2026.5.2测试.xlsx',
+  yearId: 'y1',
+  now: '2026-05-02T08:00:00.000Z',
+});
+const uniqueNameNoNumberMerged = mergePrearrangedImportWithYearData(
+  uniqueNameDifferentNoData,
+  'y1',
+  uniqueNameNoNumberImport,
+  'appendMissing',
+);
+assert.equal(
+  uniqueNameNoNumberMerged.students.filter(student => student.yearId === 'y1' && student.name === '叶子超').length,
+  1,
+  'default import links a unique same-name student even when the prearranged table has no student number',
+);
+assert.equal(
+  uniqueNameNoNumberMerged.testSessions[0].groupingVersions.hundred[0].groups[0].members[0].studentId,
+  'archive-yezi',
+  'no-number imported group members use the existing archive id when matched by unique name',
+);
+
 const sameNameImport = parsePrearrangedWorkbook({
   百米: [
     ['时间', '道次', '姓名', '序号'],
@@ -168,18 +230,46 @@ const sameNameData: AppData = {
   records: {},
   testSessions: [],
 };
+const sameNamePreview = buildPrearrangedImportPreview(sameNameData, 'y1', sameNameImport, 'appendMissing');
+assert.equal(
+  sameNamePreview.conflicts[0].type,
+  'DUPLICATE_NAME_WITHOUT_STUDENT_NO',
+  'same-name import with multiple possible archive profiles stops for manual confirmation',
+);
 const sameNameMerged = mergePrearrangedImportWithYearData(sameNameData, 'y1', sameNameImport, 'appendMissing');
 assert.equal(
   sameNameMerged.students.some(student => student.studentNo === '003' && student.name === '张伟'),
-  true,
-  'same-name import with a different number creates a distinct student',
+  false,
+  'same-name import with multiple possible archive profiles does not create a duplicate student',
 );
-const sameNameSession = sameNameMerged.testSessions.find(session => session.id === sameNameImport.testSession.id)!;
-const sameNameMemberId = sameNameSession.groupingVersions.hundred[0].groups[0].members[0].studentId;
 assert.equal(
-  sameNameMerged.students.find(student => student.id === sameNameMemberId)?.studentNo,
+  sameNameMerged.testSessions.length,
+  0,
+  'same-name import with multiple possible archive profiles does not create a partial test session',
+);
+
+const missingNameImport = parsePrearrangedWorkbook({
+  百米: [
+    ['时间', '道次', '姓名', '序号'],
+    ['09:00', '1', '新学生', '003'],
+  ],
+}, {
+  fileName: '2026.5.2测试.xlsx',
+  yearId: 'y1',
+  now: '2026-05-02T08:00:00.000Z',
+});
+const missingNameMerged = mergePrearrangedImportWithYearData(sameNameData, 'y1', missingNameImport, 'appendMissing');
+assert.equal(
+  missingNameMerged.students.some(student => student.studentNo === '003' && student.name === '新学生'),
+  true,
+  'default import still creates a new profile when the name is not in the archive',
+);
+const missingNameSession = missingNameMerged.testSessions.find(session => session.id === missingNameImport.testSession.id)!;
+const missingNameMemberId = missingNameSession.groupingVersions.hundred[0].groups[0].members[0].studentId;
+assert.equal(
+  missingNameMerged.students.find(student => student.id === missingNameMemberId)?.studentNo,
   '003',
-  'same-name imported grouping points at the imported student number',
+  'new student imported grouping points at the imported student number',
 );
 
 const femaleImport = parsePrearrangedWorkbook({
