@@ -30,11 +30,127 @@ const DEFAULT_DATA: AppData = {
 
 const EVENTS: SportEventKey[] = ['hundred', 'shotPut', 'tripleJump', 'eightHundred'];
 
+export type StudentArchiveImportRow = { name: string; gender: Student['gender']; studentNo?: string };
+
 function genderFromStudentNo(value: unknown): Student['gender'] | undefined {
   const text = String(value || '').trim();
   if (text === '女') return 'female';
   if (text === '男') return 'male';
   return undefined;
+}
+
+function cleanStudentNo(value: unknown): string {
+  return String(value || '').trim();
+}
+
+function createStudentNoAllocator(students: Student[], years: AcademicYear[], yearId: string) {
+  const year = years.find(item => item.id === yearId);
+  const yearPrefix = year ? year.name.slice(-2) : '00';
+  const usedStudentNos = new Set(
+    students
+      .filter(student => student.yearId === yearId)
+      .map(student => cleanStudentNo(student.studentNo))
+      .filter(studentNo => studentNo && !genderFromStudentNo(studentNo)),
+  );
+  const numericSuffixes = Array.from(usedStudentNos)
+    .map(studentNo => parseInt(studentNo.slice(-3), 10))
+    .filter(Number.isFinite);
+  let nextNum = numericSuffixes.length > 0 ? Math.max(...numericSuffixes) + 1 : 1;
+
+  return (preferredNo = '') => {
+    const cleanPreferredNo = cleanStudentNo(preferredNo);
+    if (cleanPreferredNo && !genderFromStudentNo(cleanPreferredNo) && !usedStudentNos.has(cleanPreferredNo)) {
+      usedStudentNos.add(cleanPreferredNo);
+      return cleanPreferredNo;
+    }
+
+    let studentNo = `${yearPrefix}${String(nextNum).padStart(3, '0')}`;
+    while (usedStudentNos.has(studentNo)) {
+      nextNum += 1;
+      studentNo = `${yearPrefix}${String(nextNum).padStart(3, '0')}`;
+    }
+    usedStudentNos.add(studentNo);
+    nextNum += 1;
+    return studentNo;
+  };
+}
+
+export function mergeStudentArchiveImport({
+  students,
+  importedStudents,
+  yearId,
+  years,
+}: {
+  students: Student[];
+  importedStudents: StudentArchiveImportRow[];
+  yearId: string;
+  years: AcademicYear[];
+}): Student[] {
+  let nextStudents = students.map(student => ({
+    ...student,
+    studentNo: cleanStudentNo(student.studentNo),
+  }));
+  const nextStudentNo = createStudentNoAllocator(nextStudents, years, yearId);
+  const seenImportedKeys = new Set<string>();
+
+  importedStudents.forEach(item => {
+    const name = item.name.trim();
+    if (!name) return;
+
+    const providedNo = cleanStudentNo(item.studentNo);
+    const importedKey = providedNo ? `${providedNo}:${name}` : `no-number:${name}`;
+    if (seenImportedKeys.has(importedKey)) return;
+    seenImportedKeys.add(importedKey);
+
+    const yearStudents = nextStudents.filter(student => student.yearId === yearId);
+    const exactMatch = providedNo
+      ? yearStudents.find(student => student.studentNo === providedNo && student.name === name)
+      : undefined;
+    const nameMatches = providedNo ? [] : yearStudents.filter(student => student.name === name);
+    const matchedStudent = exactMatch || (nameMatches.length === 1 ? nameMatches[0] : undefined);
+
+    if (matchedStudent) {
+      nextStudents = nextStudents.map(student => (
+        student.id === matchedStudent.id && student.gender !== item.gender
+          ? { ...student, gender: item.gender }
+          : student
+      ));
+      return;
+    }
+
+    if (!providedNo && nameMatches.length > 1) return;
+
+    nextStudents = [
+      ...nextStudents,
+      {
+        id: Date.now().toString() + Math.random(),
+        studentNo: nextStudentNo(providedNo),
+        name,
+        gender: item.gender,
+        yearId,
+      },
+    ];
+  });
+
+  return nextStudents;
+}
+
+function recalculateRecordsForStudents(records: AppData['records'], students: Student[]): AppData['records'] {
+  const studentsById = new Map(students.map(student => [student.id, student]));
+
+  return Object.fromEntries(
+    Object.entries(records).map(([studentId, studentRecords]) => {
+      const student = studentsById.get(studentId);
+      if (!student) return [studentId, studentRecords];
+      return [
+        studentId,
+        studentRecords.map(record => ({
+          ...record,
+          points: calculatePoints(record.scores, student.gender),
+        })),
+      ];
+    }),
+  );
 }
 
 function normalizeStudents(students: Student[], years: AcademicYear[]): Student[] {
@@ -308,53 +424,17 @@ export function useData() {
 
   const batchAddStudents = (studentList: { name: string; gender: 'male' | 'female'; studentNo?: string }[], yearId: string) => {
     setData(prev => {
-      const year = prev.years.find(y => y.id === yearId);
-      const yearPrefix = year ? year.name.slice(-2) : '00';
-      const yearStudents = prev.students.filter(s => s.yearId === yearId);
-      const usedStudentNos = new Set(yearStudents.map(student => student.studentNo).filter(Boolean));
-      const existingKeys = new Set(yearStudents.map(student => `${student.studentNo || ''}:${student.name}`));
-      const existingNames = new Set(yearStudents.map(student => student.name));
-      const newStudents: Student[] = [];
-
-      const numericSuffixes = yearStudents
-        .map(student => parseInt((student.studentNo || '').slice(-3), 10))
-        .filter(Number.isFinite);
-      let nextNum = numericSuffixes.length > 0 ? Math.max(...numericSuffixes) + 1 : 1;
-
-      const nextGeneratedNo = () => {
-        let studentNo = `${yearPrefix}${String(nextNum).padStart(3, '0')}`;
-        while (usedStudentNos.has(studentNo)) {
-          nextNum += 1;
-          studentNo = `${yearPrefix}${String(nextNum).padStart(3, '0')}`;
-        }
-        nextNum += 1;
-        usedStudentNos.add(studentNo);
-        return studentNo;
-      };
-
-      studentList.forEach(item => {
-        const name = item.name.trim();
-        if (!name) return;
-        const providedNo = item.studentNo?.trim() || '';
-        const duplicate = providedNo
-          ? existingKeys.has(`${providedNo}:${name}`)
-          : existingNames.has(name);
-        if (duplicate) return;
-
-        const studentNo = providedNo || nextGeneratedNo();
-        existingKeys.add(`${studentNo}:${name}`);
-        existingNames.add(name);
-        if (studentNo) usedStudentNos.add(studentNo);
-        newStudents.push({
-          id: Date.now().toString() + Math.random(),
-          studentNo,
-          name,
-          gender: item.gender,
-          yearId,
-        });
+      const students = mergeStudentArchiveImport({
+        students: prev.students,
+        importedStudents: studentList,
+        yearId,
+        years: prev.years,
       });
-
-      return { ...prev, students: [...prev.students, ...newStudents] };
+      return {
+        ...prev,
+        students,
+        records: recalculateRecordsForStudents(prev.records, students),
+      };
     });
   };
 

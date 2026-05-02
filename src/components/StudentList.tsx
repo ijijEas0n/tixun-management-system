@@ -85,7 +85,7 @@ export default function StudentList({ students, onAdd, onBatchAdd, onDelete, onB
       const newStudentsBatch = parseStudentImportWorkbook(sheets);
       if (newStudentsBatch.length > 0) {
         onBatchAdd(newStudentsBatch);
-        setImportMessage(`已读取 ${newStudentsBatch.length} 名学生，重复档案会自动跳过`);
+        setImportMessage(`已读取 ${newStudentsBatch.length} 名学生，重复档案会自动更新`);
       } else {
         setImportMessage('没有识别到学生名单');
       }

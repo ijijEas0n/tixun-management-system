@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { parseStoredAppData } from './storage';
+import { mergeStudentArchiveImport, parseStoredAppData } from './storage';
 
 assert.equal(
   parseStoredAppData('{bad json').years[0].id,
@@ -37,4 +37,42 @@ assert.deepEqual(
     { name: '叶子超', studentNo: '26002', gender: 'male' },
   ],
   'saved students imported from two-column gender sheets are repaired on load',
+);
+
+const mergedRosterAfterPrearrangedImport = mergeStudentArchiveImport({
+  students: [
+    { id: 'pre-1', name: '李雨珊', studentNo: '26001', gender: 'male', yearId: 'y26' },
+    { id: 'pre-2', name: '叶子超', studentNo: '26002', gender: 'male', yearId: 'y26' },
+  ],
+  importedStudents: [
+    { name: '李雨珊', gender: 'female' },
+    { name: '叶子超', gender: 'male' },
+    { name: '新女生', gender: 'female' },
+  ],
+  yearId: 'y26',
+  years: [{ id: 'y26', name: '2026' }],
+});
+
+assert.equal(
+  mergedRosterAfterPrearrangedImport.find(student => student.name === '李雨珊')?.id,
+  'pre-1',
+  'student archive import keeps the existing student id when correcting a matched profile',
+);
+
+assert.equal(
+  mergedRosterAfterPrearrangedImport.find(student => student.name === '李雨珊')?.gender,
+  'female',
+  'student archive import updates gender for an existing no-number roster match',
+);
+
+assert.equal(
+  mergedRosterAfterPrearrangedImport.filter(student => student.name === '李雨珊').length,
+  1,
+  'student archive import does not create a duplicate when correcting gender',
+);
+
+assert.deepEqual(
+  mergedRosterAfterPrearrangedImport.find(student => student.name === '新女生'),
+  { id: mergedRosterAfterPrearrangedImport.find(student => student.name === '新女生')?.id, name: '新女生', studentNo: '26003', gender: 'female', yearId: 'y26' },
+  'student archive import still adds new students after correcting existing profiles',
 );
