@@ -13,6 +13,7 @@ export interface VoiceNoteAssignment {
   studentId: string;
   note: string;
   sourceText: string;
+  confidence: 'high' | 'medium';
 }
 
 export interface VoiceScoreParseResult {
@@ -262,6 +263,7 @@ export function parseVoiceScoreText(options: ParseOptions): VoiceScoreParseResul
         studentId: match.student.id,
         note,
         sourceText: segment,
+        confidence: match.confidence,
       });
       return;
     }

@@ -30,6 +30,62 @@ const DEFAULT_DATA: AppData = {
 
 const EVENTS: SportEventKey[] = ['hundred', 'shotPut', 'tripleJump', 'eightHundred'];
 
+function genderFromStudentNo(value: unknown): Student['gender'] | undefined {
+  const text = String(value || '').trim();
+  if (text === '女') return 'female';
+  if (text === '男') return 'male';
+  return undefined;
+}
+
+function normalizeStudents(students: Student[], years: AcademicYear[]): Student[] {
+  const usedStudentNosByYear = new Map<string, Set<string>>();
+  const nextNumberByYear = new Map<string, number>();
+
+  const getUsedStudentNos = (yearId: string) => {
+    const used = usedStudentNosByYear.get(yearId) || new Set<string>();
+    usedStudentNosByYear.set(yearId, used);
+    return used;
+  };
+
+  students.forEach(student => {
+    const studentNo = String(student.studentNo || '').trim();
+    if (!studentNo || genderFromStudentNo(studentNo)) return;
+    const used = getUsedStudentNos(student.yearId);
+    used.add(studentNo);
+    const suffix = parseInt(studentNo.slice(-3), 10);
+    if (Number.isFinite(suffix)) {
+      nextNumberByYear.set(student.yearId, Math.max(nextNumberByYear.get(student.yearId) || 1, suffix + 1));
+    }
+  });
+
+  const nextStudentNo = (yearId: string) => {
+    const year = years.find(item => item.id === yearId);
+    const yearPrefix = year ? year.name.slice(-2) : '00';
+    const used = getUsedStudentNos(yearId);
+    let nextNum = nextNumberByYear.get(yearId) || 1;
+    let studentNo = `${yearPrefix}${String(nextNum).padStart(3, '0')}`;
+    while (used.has(studentNo)) {
+      nextNum += 1;
+      studentNo = `${yearPrefix}${String(nextNum).padStart(3, '0')}`;
+    }
+    used.add(studentNo);
+    nextNumberByYear.set(yearId, nextNum + 1);
+    return studentNo;
+  };
+
+  return students.map(student => {
+    const studentNo = String(student.studentNo || '').trim();
+    const gender = genderFromStudentNo(studentNo);
+    if (gender) {
+      return { ...student, gender, studentNo: nextStudentNo(student.yearId) };
+    }
+    if (!studentNo) {
+      return { ...student, studentNo: nextStudentNo(student.yearId) };
+    }
+    return { ...student, studentNo };
+  });
+}
+
 function normalizeGroupingVersions(rawSession: any): Record<SportEventKey, TestSessionGroupingVersion[]> {
   const empty = createEmptyGroupingVersions();
 
@@ -150,14 +206,7 @@ export function parseStoredAppData(saved: string | null): AppData {
   const students = Array.isArray(parsed.students) ? parsed.students : [];
   const testSessions = normalizeTestSessions(parsed.testSessions || parsed.phaseTests);
 
-  const migratedStudents = students.map((s: Student) => {
-    if (!s.studentNo) {
-      const year = years.find((y: AcademicYear) => y.id === s.yearId);
-      const yearPrefix = year ? year.name.slice(-2) : '00';
-      return { ...s, studentNo: `${yearPrefix}999` };
-    }
-    return s;
-  });
+  const migratedStudents = normalizeStudents(students, years);
 
   const rawRecords = parsed.records && typeof parsed.records === 'object' ? parsed.records : {};
   const records = Object.fromEntries(

@@ -77,7 +77,6 @@ import {
   safeParseEntryDraftComments,
   safeParseEntryDrafts,
 } from '../lib/entryDrafts';
-import { parseVoiceScoreText, VoiceNoteAssignment } from '../lib/voiceScoreParser';
 import { formatTencentVoiceError, isTencentVoiceCloseCode } from '../lib/tencentVoiceError';
 import {
   getDefaultVoiceApiSettings,
@@ -86,6 +85,22 @@ import {
   VOICE_API_SETTINGS_KEY,
   VoiceApiSettings,
 } from '../lib/tencentVoiceSettings';
+import {
+  BrowserVoiceActivityController,
+  DEFAULT_VOICE_ACTIVITY_CONFIG,
+  startBrowserVoiceActivityDetector,
+  VoiceAutoStopReason,
+} from '../lib/voiceActivityDetector';
+import {
+  buildVoiceContextTerms,
+  buildVoiceRecognitionReview,
+  VoiceNoteCandidate,
+  VoiceRecognitionCandidate,
+  VoiceRecognitionMode,
+  VoiceRecognitionReview,
+  VoiceScoreCandidate,
+} from '../lib/voiceRecognitionPipeline';
+import { createEmptyVoiceSessionState } from '../lib/voiceSessionState';
 import {
   parsePrearrangedWorkbook,
   PrearrangedImportResult,
@@ -156,7 +171,7 @@ interface ScoreSyncHistoryItem {
 }
 
 type VoiceMessageTone = 'info' | 'success' | 'error';
-type VoiceStopReason = 'manual' | 'timeout' | 'cleanup';
+type VoiceStopReason = 'manual' | 'timeout' | 'cleanup' | 'auto-silence' | 'no-speech';
 
 const SCORE_SYNC_HISTORY_KEY = 'testing_group_score_sync_history';
 const ENTRY_VERSION_SELECTIONS_KEY = 'testing_group_entry_version_selections';
@@ -326,10 +341,17 @@ export default function TestWorkspace({
   const [voiceMessage, setVoiceMessage] = useState('');
   const [voiceMessageTone, setVoiceMessageTone] = useState<VoiceMessageTone>('info');
   const [isVoiceSettingsOpen, setIsVoiceSettingsOpen] = useState(false);
+  const [isVoiceModeMenuOpen, setIsVoiceModeMenuOpen] = useState(false);
+  const [voiceMode, setVoiceMode] = useState<VoiceRecognitionMode>('score');
   const [voiceSettings, setVoiceSettings] = useState<VoiceApiSettings>(() => loadVoiceApiSettings());
   const [voiceSettingsDraft, setVoiceSettingsDraft] = useState<VoiceApiSettings>(() => loadVoiceApiSettings());
+  const [pendingVoiceReviewItems, setPendingVoiceReviewItems] = useState<VoiceRecognitionCandidate[]>([]);
+  const [voiceUnmatchedSegments, setVoiceUnmatchedSegments] = useState<string[]>([]);
+  const [voiceContextTermCount, setVoiceContextTermCount] = useState(0);
   const voiceRecognizerRef = useRef<WebAudioSpeechRecognizer | null>(null);
+  const voiceActivityDetectorRef = useRef<BrowserVoiceActivityController | null>(null);
   const voiceResultTextRef = useRef('');
+  const voiceModeRef = useRef<VoiceRecognitionMode>('score');
   const voiceMaxTimerRef = useRef<number | null>(null);
   const voiceStopReasonRef = useRef<VoiceStopReason | null>(null);
   const voiceStartTokenRef = useRef(0);
@@ -399,8 +421,15 @@ export default function TestWorkspace({
     }
   };
 
+  const stopVoiceActivityDetector = () => {
+    const detector = voiceActivityDetectorRef.current;
+    voiceActivityDetectorRef.current = null;
+    detector?.stop();
+  };
+
   const resetVoiceRecognizer = (shouldStop = true) => {
     clearVoiceTimers();
+    stopVoiceActivityDetector();
     const recognizer = voiceRecognizerRef.current;
     voiceRecognizerRef.current = null;
     if (!shouldStop) return;
@@ -745,7 +774,7 @@ export default function TestWorkspace({
     });
   };
 
-  const updateDraftCommentsFromVoice = (notes: VoiceNoteAssignment[]) => {
+  const updateDraftCommentsFromVoice = (notes: Array<Pick<VoiceNoteCandidate, 'studentId' | 'note'>>) => {
     if (!draftKey || notes.length === 0) return;
     setDraftComments(prev => {
       const versionComments = { ...(prev[draftKey] || {}) };
@@ -756,57 +785,172 @@ export default function TestWorkspace({
     });
   };
 
-  const applyVoiceTextToDraft = () => {
-    if (!selectedGroup || !draftKey || !voiceText.trim()) return;
-    const parsed = parseVoiceScoreText({
-      text: voiceText,
+  const applyVoiceScoreCandidatesToDraft = (scoreCandidates: VoiceScoreCandidate[]) => {
+    if (!draftKey || scoreCandidates.length === 0) return;
+    setDraftInputs(prev => {
+      const versionDraft = { ...(prev[draftKey] || {}) };
+      scoreCandidates.forEach(candidate => {
+        const current = [...(versionDraft[candidate.studentId] || [])];
+        while (current.length < trialCount) current.push('');
+        const firstEmptyIndex = current.findIndex(value => !value);
+        const index = candidate.trialIndex ?? (firstEmptyIndex >= 0 ? firstEmptyIndex : 0);
+        current[index] = candidate.value;
+        versionDraft[candidate.studentId] = current;
+      });
+      return { ...prev, [draftKey]: versionDraft };
+    });
+  };
+
+  const applyVoiceCandidatesToDraft = (candidates: VoiceRecognitionCandidate[]) => {
+    const scoreCandidates = candidates.filter((candidate): candidate is VoiceScoreCandidate => candidate.type === 'score');
+    const noteCandidates = candidates.filter((candidate): candidate is VoiceNoteCandidate => candidate.type === 'note');
+    applyVoiceScoreCandidatesToDraft(scoreCandidates);
+    updateDraftCommentsFromVoice(noteCandidates);
+  };
+
+  const applyVoiceReviewToDraft = (review: VoiceRecognitionReview, shouldKeepText: boolean) => {
+    setVoiceText(shouldKeepText ? review.normalizedText : '');
+    setVoiceContextTermCount(review.contextTerms.length);
+    setPendingVoiceReviewItems(review.reviewRequiredCandidates);
+    setVoiceUnmatchedSegments(review.unmatchedSegments);
+
+    if (review.autoApplicableCandidates.length > 0) {
+      applyVoiceCandidatesToDraft(review.autoApplicableCandidates);
+    }
+
+    const hasAppliedItems = review.autoApplicableCandidates.length > 0;
+    const parts = [
+      hasAppliedItems ? `已自动填入 ${review.autoApplicableCandidates.length} 条` : '',
+      review.reviewRequiredCandidates.length > 0 ? `${review.reviewRequiredCandidates.length} 条需要确认` : '',
+      review.unmatchedSegments.length > 0 ? `${review.unmatchedSegments.length} 句未识别` : '',
+    ].filter(Boolean);
+    showVoiceMessage(parts.join('，') || '没有识别到成绩', hasAppliedItems ? 'success' : review.reviewRequiredCandidates.length > 0 ? 'info' : 'error');
+  };
+
+  const buildCurrentVoiceReview = (text: string, mode: VoiceRecognitionMode = voiceModeRef.current) => {
+    if (!selectedGroup || !draftKey || !text.trim()) return null;
+    return buildVoiceRecognitionReview({
+      text,
       students,
       group: selectedGroup,
       event: activeEvent,
       trialCount,
+      mode,
     });
+  };
 
-    if (parsed.assignments.length > 0) {
-      setDraftInputs(prev => {
-        const versionDraft = { ...(prev[draftKey] || {}) };
-        parsed.assignments.forEach(assignment => {
-          const current = [...(versionDraft[assignment.studentId] || [])];
-          while (current.length < trialCount) current.push('');
-          const firstEmptyIndex = current.findIndex(value => !value);
-          const index = assignment.trialIndex ?? (firstEmptyIndex >= 0 ? firstEmptyIndex : 0);
-          current[index] = assignment.value;
-          versionDraft[assignment.studentId] = current;
-        });
-        return { ...prev, [draftKey]: versionDraft };
-      });
+  const applyVoiceTextToDraft = () => {
+    const review = buildCurrentVoiceReview(voiceText);
+    if (!review) return;
+    applyVoiceReviewToDraft(review, true);
+  };
+
+  const finishRecognizedVoiceResult = () => {
+    const recognizedText = voiceResultTextRef.current.trim();
+    voiceResultTextRef.current = '';
+    if (!recognizedText) {
+      const emptyVoiceState = createEmptyVoiceSessionState();
+      setVoiceText(emptyVoiceState.text);
+      setPendingVoiceReviewItems(emptyVoiceState.reviewItems);
+      setVoiceUnmatchedSegments(emptyVoiceState.unmatchedSegments);
+      setVoiceContextTermCount(emptyVoiceState.contextTermCount);
+      return false;
     }
 
-    if (parsed.notes.length > 0) {
-      updateDraftCommentsFromVoice(parsed.notes);
+    const review = buildCurrentVoiceReview(recognizedText);
+    if (!review) {
+      setVoiceText('');
+      return false;
     }
+    applyVoiceReviewToDraft(review, false);
+    return true;
+  };
 
-    const hasAppliedItems = parsed.assignments.length > 0 || parsed.notes.length > 0;
-    const parts = [
-      parsed.assignments.length > 0 ? `已填入 ${parsed.assignments.length} 条成绩` : '',
-      parsed.notes.length > 0 ? `已添加 ${parsed.notes.length} 条批注` : '',
-      parsed.unmatchedSegments.length > 0 ? `${parsed.unmatchedSegments.length} 句未识别` : '',
-    ].filter(Boolean);
-    showVoiceMessage(parts.join('，') || '没有识别到成绩', hasAppliedItems ? 'success' : 'error');
+  const confirmVoiceReviewItem = (candidate: VoiceRecognitionCandidate) => {
+    applyVoiceCandidatesToDraft([candidate]);
+    setPendingVoiceReviewItems(prev => prev.filter(item => item.id !== candidate.id));
+    showVoiceMessage('已确认并填入 1 条语音结果', 'success');
+  };
+
+  const confirmAllVoiceReviewItems = () => {
+    if (pendingVoiceReviewItems.length === 0) return;
+    applyVoiceCandidatesToDraft(pendingVoiceReviewItems);
+    setPendingVoiceReviewItems([]);
+    showVoiceMessage(`已确认并填入 ${pendingVoiceReviewItems.length} 条语音结果`, 'success');
+  };
+
+  const ignoreVoiceReviewItem = (candidate: VoiceRecognitionCandidate) => {
+    setPendingVoiceReviewItems(prev => prev.filter(item => item.id !== candidate.id));
+    showVoiceMessage('已忽略 1 条待确认结果', 'info');
+  };
+
+  const clearVoiceInput = () => {
+    const emptyVoiceState = createEmptyVoiceSessionState();
+    setVoiceText(emptyVoiceState.text);
+    setPendingVoiceReviewItems(emptyVoiceState.reviewItems);
+    setVoiceUnmatchedSegments(emptyVoiceState.unmatchedSegments);
+    setVoiceContextTermCount(emptyVoiceState.contextTermCount);
+    voiceResultTextRef.current = '';
+    showVoiceMessage('');
+  };
+
+  const handleVoiceTextChange = (value: string) => {
+    setVoiceText(value);
+    setPendingVoiceReviewItems([]);
+    setVoiceUnmatchedSegments([]);
+    if (!value.trim()) setVoiceContextTermCount(0);
+  };
+
+  const getVoiceReviewItemStudentLabel = (candidate: VoiceRecognitionCandidate) => (
+    getStudentLabel(studentsById.get(candidate.studentId))
+  );
+
+  const getVoiceReviewItemValueLabel = (candidate: VoiceRecognitionCandidate) => {
+    if (candidate.type === 'note') return `批注：${candidate.note}`;
+    const trialText = candidate.trialIndex === null ? '自动选择空位' : `第 ${candidate.trialIndex + 1} 次`;
+    return `${trialText}：${candidate.value}`;
   };
 
   const stopVoiceListening = (reason: VoiceStopReason = 'manual') => {
     if (!isListening && !isProcessingVoice && reason !== 'cleanup') return;
     voiceStopReasonRef.current = reason;
     voiceStartTokenRef.current += 1;
+    const hasProcessedResult = reason === 'cleanup' ? false : finishRecognizedVoiceResult();
     resetVoiceRecognizer();
     setIsListening(false);
     setIsProcessingVoice(false);
+    if (hasProcessedResult) return;
     if (reason === 'manual') {
-      showVoiceMessage(voiceResultTextRef.current ? '已结束，识别文本已保留' : '已结束，没有收到识别文本', 'info');
+      showVoiceMessage('已结束，没有收到识别文本', 'info');
+    } else if (reason === 'auto-silence') {
+      showVoiceMessage('检测到说话结束，但没有收到文本', 'info');
+    } else if (reason === 'no-speech') {
+      showVoiceMessage('长时间没有听到有效语音，已自动结束', 'info');
+    } else if (reason === 'timeout') {
+      showVoiceMessage('已达到最长识别时间，系统已自动结束', 'info');
     }
   };
 
-  const startVoiceListening = async () => {
+  const startLocalVoiceActivityDetection = async (startToken: number) => {
+    try {
+      const detector = await startBrowserVoiceActivityDetector(DEFAULT_VOICE_ACTIVITY_CONFIG, {
+        onAutoStop: (reason: VoiceAutoStopReason) => {
+          if (voiceStartTokenRef.current !== startToken) return;
+          stopVoiceListening(reason === 'no-speech' ? 'no-speech' : 'auto-silence');
+        },
+      });
+      if (voiceStartTokenRef.current !== startToken) {
+        detector.stop();
+        return;
+      }
+      voiceActivityDetectorRef.current = detector;
+    } catch (error) {
+      if (error instanceof DOMException) throw error;
+      showVoiceMessage('本地语音结束检测不可用，仍可手动结束录入', 'info');
+    }
+  };
+
+  const startVoiceListening = async (mode: VoiceRecognitionMode) => {
     if (!selectedGroup) {
       showVoiceMessage('请先选择一个分组，再使用语音录入', 'error');
       return;
@@ -819,14 +963,32 @@ export default function TestWorkspace({
     }
 
     const startToken = voiceStartTokenRef.current + 1;
+    const emptyVoiceState = createEmptyVoiceSessionState();
+    voiceModeRef.current = mode;
     voiceStartTokenRef.current = startToken;
+    voiceResultTextRef.current = '';
+    setVoiceText(emptyVoiceState.text);
+    setPendingVoiceReviewItems(emptyVoiceState.reviewItems);
+    setVoiceUnmatchedSegments(emptyVoiceState.unmatchedSegments);
+    setVoiceContextTermCount(emptyVoiceState.contextTermCount);
     setIsProcessingVoice(true);
     setIsListening(false);
+    setVoiceMode(mode);
+    setIsVoiceModeMenuOpen(false);
     showVoiceMessage('正在加载腾讯云语音组件...', 'info');
 
     try {
+      await startLocalVoiceActivityDetection(startToken);
+      if (voiceStartTokenRef.current !== startToken) return;
+
       const { default: WebAudioSpeechRecognizerClass } = await import('tencentcloud-speech-sdk-js/app/webaudiospeechrecognizer.js');
       if (voiceStartTokenRef.current !== startToken) return;
+      const contextTerms = buildVoiceContextTerms({
+        students,
+        group: selectedGroup,
+        event: activeEvent,
+      });
+      setVoiceContextTermCount(contextTerms.length);
 
       const recognizer = new WebAudioSpeechRecognizerClass({
         appid: voiceSettings.appId,
@@ -852,7 +1014,12 @@ export default function TestWorkspace({
         if (voiceRecognizerRef.current !== recognizer) return;
         setIsProcessingVoice(false);
         setIsListening(true);
-        showVoiceMessage('已连接，正在听写；说完后点“结束”', 'info');
+        showVoiceMessage(
+          mode === 'note'
+            ? '技术批注录入中：可说“姓名/道次 + 批注内容”，系统会尝试自动结束'
+            : '成绩录入中：可说“道次/姓名 + 成绩”，系统会尝试自动结束',
+          'info',
+        );
       };
       recognizer.OnSentenceBegin = () => {
         if (voiceRecognizerRef.current !== recognizer) return;
@@ -874,10 +1041,13 @@ export default function TestWorkspace({
       };
       recognizer.OnRecognitionComplete = () => {
         if (voiceRecognizerRef.current !== recognizer) return;
+        const hasProcessedResult = finishRecognizedVoiceResult();
         resetVoiceRecognizer(false);
         setIsListening(false);
         setIsProcessingVoice(false);
-        showVoiceMessage(voiceResultTextRef.current ? '识别已结束，确认后可填入成绩' : '识别结束，没有收到文本', voiceResultTextRef.current ? 'success' : 'error');
+        if (!hasProcessedResult) {
+          showVoiceMessage('识别结束，没有收到文本', 'error');
+        }
       };
       let hasShownSdkError = false;
       recognizer.OnError = error => {
@@ -891,7 +1061,6 @@ export default function TestWorkspace({
       };
       voiceMaxTimerRef.current = window.setTimeout(() => {
         stopVoiceListening('timeout');
-        showVoiceMessage('已达到最长识别时间，系统已自动结束', 'info');
       }, VOICE_MAX_RECOGNITION_MS);
       recognizer.start();
     } catch (error) {
@@ -908,16 +1077,11 @@ export default function TestWorkspace({
       stopVoiceListening('manual');
       return;
     }
-    startVoiceListening();
+    setIsVoiceModeMenuOpen(prev => !prev);
   };
 
-  const startStudentCommentVoice = (student: Student | undefined) => {
-    if (!student) return;
-    setVoiceText(`${student.name}备注 `);
-    showVoiceMessage(`已定位到 ${student.name} 的批注，可直接说内容或手动输入`, 'info');
-    if (!isListening && !isProcessingVoice) {
-      void startVoiceListening();
-    }
+  const startVoiceListeningWithMode = (mode: VoiceRecognitionMode) => {
+    void startVoiceListening(mode);
   };
 
   const handleAddTrial = () => {
@@ -1281,20 +1445,8 @@ export default function TestWorkspace({
               </div>
             ))}
             <div className="min-w-[220px] flex-1 max-w-md">
-              <div className="mb-1 flex items-center justify-between gap-2">
+              <div className="mb-1 flex items-center gap-2">
                 <span className="text-[10px] font-black text-slate-300">技术批注</span>
-                <button
-                  type="button"
-                  onClick={event => {
-                    event.stopPropagation();
-                    startStudentCommentVoice(student);
-                  }}
-                  className="inline-flex items-center gap-1 rounded-lg border border-blue-100 bg-blue-50 px-2 py-0.5 text-[10px] font-black text-blue-600 hover:bg-blue-100"
-                  title="把语音批注定位到这个学生"
-                >
-                  <Mic className="h-3 w-3" />
-                  语音
-                </button>
               </div>
               <input
                 value={currentComment}
@@ -1424,9 +1576,6 @@ export default function TestWorkspace({
     return (
       <div className="mb-2 rounded-xl border border-blue-100 bg-blue-50/50 p-2">
         <div className="flex items-center gap-2">
-          <span className="hidden sm:inline-flex h-8 px-2 items-center rounded-lg bg-white border border-blue-100 text-[10px] font-black text-blue-700 shrink-0">
-            语音录入
-          </span>
           <button
             onClick={openVoiceSettings}
             className={cn(
@@ -1439,37 +1588,63 @@ export default function TestWorkspace({
             <SlidersHorizontal className="w-3.5 h-3.5" />
             设置
           </button>
-          <button
-            onClick={toggleVoiceListening}
-            className={cn(
-              'h-9 rounded-lg text-xs font-black flex items-center justify-center shrink-0 transition-all',
-              isListening && 'px-3 gap-1.5 bg-red-500 text-white hover:bg-red-600 shadow-sm',
-              !isListening && !isProcessingVoice && 'w-9 bg-blue-600 text-white hover:bg-blue-700',
-              isProcessingVoice && 'px-3 gap-1.5 bg-blue-100 text-blue-700 hover:bg-blue-200',
+          <div className="relative shrink-0">
+            <button
+              onClick={toggleVoiceListening}
+              className={cn(
+                'h-9 rounded-lg text-xs font-black flex items-center justify-center shrink-0 transition-all',
+                isListening && 'px-3 gap-1.5 bg-red-500 text-white hover:bg-red-600 shadow-sm',
+                !isListening && !isProcessingVoice && 'w-9 bg-blue-600 text-white hover:bg-blue-700',
+                isProcessingVoice && 'px-3 gap-1.5 bg-blue-100 text-blue-700 hover:bg-blue-200',
+              )}
+              title={isProcessingVoice ? '取消连接' : isListening ? '结束语音' : '选择语音录入类型'}
+              aria-label={isProcessingVoice ? '取消连接' : isListening ? '结束语音' : '选择语音录入类型'}
+            >
+              {isProcessingVoice ? (
+                <>
+                  <span className="h-2 w-2 rounded-full bg-blue-600 animate-pulse" />
+                  <MicOff className="w-3.5 h-3.5" />
+                  取消
+                </>
+              ) : isListening ? (
+                <>
+                  <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
+                  <MicOff className="w-3.5 h-3.5" />
+                  结束
+                </>
+              ) : (
+                <Mic className="w-4 h-4" />
+              )}
+            </button>
+            {isVoiceModeMenuOpen && !isListening && !isProcessingVoice && (
+              <div className="absolute left-0 top-11 z-30 w-72 rounded-xl border border-blue-100 bg-white p-2 shadow-xl">
+                <button
+                  type="button"
+                  onClick={() => startVoiceListeningWithMode('score')}
+                  className="w-full rounded-lg px-3 py-2 text-left hover:bg-blue-50"
+                >
+                  <span className="block text-xs font-black text-slate-900">成绩录入</span>
+                  <span className="mt-0.5 block text-[10px] font-bold text-slate-500">
+                    说“道次/姓名 + 成绩”，例如“一道十二秒八、赵明轩第二次十二秒六”。
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => startVoiceListeningWithMode('note')}
+                  className="mt-1 w-full rounded-lg px-3 py-2 text-left hover:bg-blue-50"
+                >
+                  <span className="block text-xs font-black text-slate-900">技术批注录入</span>
+                  <span className="mt-0.5 block text-[10px] font-bold text-slate-500">
+                    说“姓名/道次 + 批注内容”，例如“甘振豪起跑慢、二道摆臂紧”。
+                  </span>
+                </button>
+              </div>
             )}
-            title={isProcessingVoice ? '取消连接' : isListening ? '结束语音' : '开始语音'}
-            aria-label={isProcessingVoice ? '取消连接' : isListening ? '结束语音' : '开始语音'}
-          >
-            {isProcessingVoice ? (
-              <>
-                <span className="h-2 w-2 rounded-full bg-blue-600 animate-pulse" />
-                <MicOff className="w-3.5 h-3.5" />
-                取消
-              </>
-            ) : isListening ? (
-              <>
-                <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
-                <MicOff className="w-3.5 h-3.5" />
-                结束
-              </>
-            ) : (
-              <Mic className="w-4 h-4" />
-            )}
-          </button>
+          </div>
           <input
             value={voiceText}
-            onChange={event => setVoiceText(event.target.value)}
-            placeholder="一道12.8，赵明轩第二次12.6，李承泽备注起跑慢"
+            onChange={event => handleVoiceTextChange(event.target.value)}
+            placeholder={voiceMode === 'note' ? '甘振豪起跑慢，二道摆臂紧' : '一道12.8，赵明轩第二次12.6'}
             className="min-w-0 flex-1 h-9 rounded-lg border border-blue-100 bg-white px-3 text-xs font-bold text-slate-700 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 placeholder:text-slate-300"
           />
           <button
@@ -1481,10 +1656,7 @@ export default function TestWorkspace({
           </button>
           {voiceText && (
             <button
-              onClick={() => {
-                setVoiceText('');
-                showVoiceMessage('');
-              }}
+              onClick={clearVoiceInput}
               className="h-9 px-2 rounded-lg bg-white border border-blue-100 text-xs font-black text-slate-500 hover:bg-blue-50 shrink-0"
             >
               清空
@@ -1500,6 +1672,54 @@ export default function TestWorkspace({
           )}>
             {voiceMessage}
           </p>
+        )}
+        {(pendingVoiceReviewItems.length > 0 || voiceUnmatchedSegments.length > 0 || voiceContextTermCount > 0) && (
+          <div className="mt-2 border-t border-blue-100 pt-2 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] font-black text-blue-800">
+                当前分组词典 {voiceContextTermCount} 个词
+                {pendingVoiceReviewItems.length > 0 ? `，${pendingVoiceReviewItems.length} 条待确认` : ''}
+              </p>
+              {pendingVoiceReviewItems.length > 1 && (
+                <button
+                  onClick={confirmAllVoiceReviewItems}
+                  className="h-7 px-2 rounded-md bg-blue-600 text-white text-[10px] font-black hover:bg-blue-700"
+                >
+                  全部确认
+                </button>
+              )}
+            </div>
+            {pendingVoiceReviewItems.map(candidate => (
+              <div key={candidate.id} className="flex items-center gap-2 rounded-lg bg-white/70 border border-blue-100 px-2 py-1.5">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-black text-slate-800 truncate">
+                    {getVoiceReviewItemStudentLabel(candidate)} · {getVoiceReviewItemValueLabel(candidate)}
+                  </p>
+                  <p className="text-[10px] font-bold text-amber-700 truncate">
+                    {candidate.reviewReason || '需要确认'} · 原文：{candidate.sourceText}
+                  </p>
+                </div>
+                <button
+                  onClick={() => confirmVoiceReviewItem(candidate)}
+                  className="h-7 px-2 rounded-md bg-emerald-600 text-white text-[10px] font-black flex items-center gap-1 hover:bg-emerald-700 shrink-0"
+                >
+                  <CheckCircle className="w-3 h-3" />
+                  确认
+                </button>
+                <button
+                  onClick={() => ignoreVoiceReviewItem(candidate)}
+                  className="h-7 px-2 rounded-md bg-white border border-slate-200 text-slate-500 text-[10px] font-black hover:bg-slate-50 shrink-0"
+                >
+                  忽略
+                </button>
+              </div>
+            ))}
+            {voiceUnmatchedSegments.length > 0 && (
+              <p className="text-[10px] font-bold text-red-600">
+                未识别：{voiceUnmatchedSegments.join(' / ')}
+              </p>
+            )}
+          </div>
         )}
       </div>
     );

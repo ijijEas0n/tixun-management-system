@@ -34,9 +34,9 @@ function findHeaderIndexes(row: unknown[]) {
 
 function looksLikeNoHeaderStudentRow(row: unknown[]): boolean {
   const name = cellText(row[0]);
-  const studentNo = cellText(row[1]);
-  if (!name || !studentNo) return false;
-  if (name === '姓名' || studentNo === '序号') return false;
+  const secondCell = cellText(row[1]);
+  if (!name || !secondCell) return false;
+  if (name === '姓名' || ['序号', '编号', '学号', '学号/编号', '性别'].includes(secondCell)) return false;
   return /[\u4e00-\u9fa5A-Za-z]/.test(name);
 }
 
@@ -55,8 +55,13 @@ export function parseStudentImportWorkbook(sheets: WorkbookMatrices): StudentImp
       }
 
       const name = header ? cellText(row[header.name]) : cellText(row[0]);
-      const studentNo = header && header.studentNo >= 0 ? cellText(row[header.studentNo]) : cellText(row[1]);
-      const parsedGender = header && header.gender >= 0 ? parseGender(row[header.gender]) : parseGender(row[2]);
+      const noHeaderSecondColumnGender = header ? undefined : parseGender(row[1]);
+      const studentNo = header
+        ? header.studentNo >= 0 ? cellText(row[header.studentNo]) : ''
+        : noHeaderSecondColumnGender ? '' : cellText(row[1]);
+      const parsedGender = header
+        ? header.gender >= 0 ? parseGender(row[header.gender]) : undefined
+        : noHeaderSecondColumnGender || parseGender(row[2]);
       const gender = parsedGender || 'male';
       if (header ? !name : !looksLikeNoHeaderStudentRow(row)) return;
 

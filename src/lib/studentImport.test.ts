@@ -13,6 +13,14 @@ const students = parseStudentImportWorkbook({
     ['甘振豪', '29', '男'],
     ['甘振豪', '29', '男'],
   ],
+  两列名单: [
+    ['姓名', '性别'],
+    ['张诗雨', '女'],
+    ['张锦晨', '男'],
+  ],
+  无表头两列名单: [
+    ['张海心', '女'],
+  ],
 });
 
 assert.deepEqual(
@@ -23,6 +31,9 @@ assert.deepEqual(
     { name: '王丽', studentNo: '8', gender: 'female' },
     { name: '何欣怡', studentNo: '69', gender: 'female' },
     { name: '甘振豪', studentNo: '29', gender: 'male' },
+    { name: '张诗雨', studentNo: undefined, gender: 'female' },
+    { name: '张锦晨', studentNo: undefined, gender: 'male' },
+    { name: '张海心', studentNo: undefined, gender: 'female' },
   ],
-  'student archive import supports no-header lists, headered lists, numbers, gender, and dedupe',
+  'student archive import supports no-header lists, two-column gender lists, headered lists, numbers, gender, and dedupe',
 );
